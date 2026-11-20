@@ -153,7 +153,7 @@ private fun LobbyScreen(
         ) {
             Column {
                 Text("RideCom", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                Text("Offline Helmet Intercom", fontSize = 13.sp, color = Color(0xFF9AA3B2))
+                Text("Offline Helmet Intercom • v0.1.3 Native Opus", fontSize = 13.sp, color = Color(0xFF9AA3B2))
             }
             Row {
                 IconButton(onClick = onRefreshIp) {

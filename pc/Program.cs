@@ -28,11 +28,14 @@ public sealed class MainForm : Form
     private readonly ProgressBar _levelBar = new();
     private readonly TrackBar _voxSlider = new();
     private readonly Label _voxLabel = new();
+    private readonly ComboBox _bufBox = new();
+    private readonly TrackBar _volSlider = new();
+    private readonly Label _volLabel = new();
 
     public MainForm()
     {
-        Text = "RideCom PC — Offline Intercom Tester";
-        ClientSize = new Size(440, 535);
+        Text = "RideCom PC — Offline Intercom Tester (v0.1.3)";
+        ClientSize = new Size(440, 625);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
