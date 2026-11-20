@@ -34,14 +34,15 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "RideCom PC — Offline Intercom Tester (v0.1.3)";
+        Text = "RideCom PC — Offline Intercom (v1.0.0)";
         ClientSize = new Size(440, 625);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(16, 18, 24);
+        BackColor = Color.FromArgb(11, 14, 20);
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 10f);
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
         int y = 16;
 

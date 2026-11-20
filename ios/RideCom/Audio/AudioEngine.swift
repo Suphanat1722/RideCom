@@ -86,7 +86,7 @@ final class AudioEngine {
 
     private func configureSession(preferBluetooth: Bool) throws {
         let session = AVAudioSession.sharedInstance()
-        var options: AVAudioSession.CategoryOptions = [.allowBluetooth]
+        var options: AVAudioSession.CategoryOptions = [.allowBluetooth, .mixWithOthers]
         if !preferBluetooth {
             options.insert(.defaultToSpeaker)
         }

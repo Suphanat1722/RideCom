@@ -3,6 +3,7 @@ package com.ridecom.audio
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -13,6 +14,8 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import com.ridecom.protocol.RideComProtocol
 import java.util.concurrent.ArrayBlockingQueue
@@ -40,6 +43,8 @@ class AudioEngine(private val context: Context) {
     private var txWorkerThread: Thread? = null
     private var playbackThread: Thread? = null
     private val txQueue = ArrayBlockingQueue<ShortArray>(8)
+    private var deviceCallback: AudioDeviceCallback? = null
+    private var routeChangeListener: ((AudioRoute) -> Unit)? = null
 
     @Volatile
     var currentRoute: AudioRoute = AudioRoute.SPEAKER
@@ -56,8 +61,10 @@ class AudioEngine(private val context: Context) {
     ) {
         if (!running.compareAndSet(false, true)) return
 
+        routeChangeListener = onRouteChanged
         configureAudioRouting(preferBluetooth)
         onRouteChanged(currentRoute)
+        registerDeviceCallback()
 
         val frameBytes = RideComProtocol.FRAME_SAMPLES * 2
         val minRecBuf = AudioRecord.getMinBufferSize(
@@ -152,7 +159,28 @@ class AudioEngine(private val context: Context) {
     fun switchRoute(useBluetooth: Boolean): AudioRoute {
         preferBluetooth = useBluetooth
         configureAudioRouting(useBluetooth)
+        routeChangeListener?.invoke(currentRoute)
         return currentRoute
+    }
+
+    private fun registerDeviceCallback() {
+        val cb = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                if (running.get()) {
+                    configureAudioRouting(preferBluetooth)
+                    routeChangeListener?.invoke(currentRoute)
+                }
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                if (running.get()) {
+                    configureAudioRouting(preferBluetooth)
+                    routeChangeListener?.invoke(currentRoute)
+                }
+            }
+        }
+        deviceCallback = cb
+        audioManager.registerAudioDeviceCallback(cb, Handler(Looper.getMainLooper()))
     }
 
     @Suppress("DEPRECATION")
@@ -214,6 +242,10 @@ class AudioEngine(private val context: Context) {
     @Suppress("DEPRECATION")
     fun stop() {
         if (!running.compareAndSet(true, false)) return
+
+        deviceCallback?.let { audioManager.unregisterAudioDeviceCallback(it) }
+        deviceCallback = null
+        routeChangeListener = null
 
         try { audioRecord?.stop() } catch (_: Throwable) {}
         try { audioTrack?.stop() } catch (_: Throwable) {}

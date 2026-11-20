@@ -13,11 +13,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
+import com.ridecom.data.RideComPrefs
 import com.ridecom.network.PeerDiscovery
+import com.ridecom.service.IntercomService
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var peerDiscovery: PeerDiscovery
+    private lateinit var prefs: RideComPrefs
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -28,23 +31,27 @@ class MainActivity : ComponentActivity() {
 
         requestRequiredPermissions()
 
+        prefs = RideComPrefs(this)
+        IntercomService.hydratePrefs(prefs)
+
         peerDiscovery = PeerDiscovery(this)
-        peerDiscovery.start(PeerDiscovery.defaultDeviceName())
+        peerDiscovery.start(prefs.deviceName)
 
         val colorScheme = darkColorScheme(
             primary = Color(0xFF00E676),
-            onPrimary = Color(0xFF002211),
-            secondary = Color(0xFF29B6F6),
-            background = Color(0xFF000000),
-            surface = Color(0xFF121418),
-            onBackground = Color(0xFFF5F7FA),
-            onSurface = Color(0xFFF5F7FA),
-            error = Color(0xFFFF5252)
+            onPrimary = Color(0xFF002010),
+            secondary = Color(0xFF00D2FF),
+            background = Color(0xFF070A0F),
+            surface = Color(0xFF11161F),
+            onBackground = Color(0xFFF3F6FA),
+            onSurface = Color(0xFFF3F6FA),
+            error = Color(0xFFFF4757)
         )
 
         setContent {
             MaterialTheme(colorScheme = colorScheme) {
                 RideComApp(
+                    prefs = prefs,
                     peerDiscovery = peerDiscovery,
                     isBatteryOptimizationIgnored = ::isIgnoringBatteryOptimizations,
                     onRequestIgnoreBatteryOpt = ::requestIgnoreBatteryOptimizations

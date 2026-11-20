@@ -1,6 +1,12 @@
 package com.ridecom.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -14,16 +20,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Podcasts
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
@@ -31,15 +46,18 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -50,13 +68,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ridecom.R
 import com.ridecom.audio.AudioRoute
+import com.ridecom.data.RideComPrefs
 import com.ridecom.network.DiscoveredPeer
 import com.ridecom.network.PeerDiscovery
 import com.ridecom.protocol.JitterPreset
@@ -64,8 +88,18 @@ import com.ridecom.service.IntercomService
 import com.ridecom.service.IntercomState
 import java.util.Locale
 
+private val BgCanvas = Color(0xFF070A0F)
+private val CardBg = Color(0xFF11161F)
+private val CardBorder = Color(0xFF1E293B)
+private val AccentEmerald = Color(0xFF00E676)
+private val AccentCyan = Color(0xFF00D2FF)
+private val AccentAmber = Color(0xFFFFB300)
+private val AccentRed = Color(0xFFFF4757)
+private val TextSecondary = Color(0xFF8B98A9)
+
 @Composable
 fun RideComApp(
+    prefs: RideComPrefs,
     peerDiscovery: PeerDiscovery,
     isBatteryOptimizationIgnored: () -> Boolean,
     onRequestIgnoreBatteryOpt: () -> Unit
@@ -75,13 +109,19 @@ fun RideComApp(
     val peers by peerDiscovery.peers.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
-    var deviceName by remember { mutableStateOf(PeerDiscovery.defaultDeviceName()) }
-    var manualIp by remember { mutableStateOf("") }
+    var deviceName by remember { mutableStateOf(prefs.deviceName) }
+    var manualIp by remember { mutableStateOf(prefs.lastPeerIp) }
     var localIp by remember { mutableStateOf(PeerDiscovery.getLocalWifiIp()) }
 
-    Scaffold(
-        containerColor = Color.Black
-    ) { padding ->
+    val musicPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            IntercomService.instance?.loadMusic(uri)
+        }
+    }
+
+    Scaffold(containerColor = BgCanvas) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -91,18 +131,25 @@ fun RideComApp(
                 showSettings -> SettingsScreen(
                     deviceName = deviceName,
                     state = state,
-                    onDeviceNameChange = { deviceName = it },
-                    onPresetChange = { IntercomService.updateJitterPreset(it) },
-                    onBitrateChange = { IntercomService.updateBitrateKbps(it) },
+                    onDeviceNameChange = {
+                        deviceName = it
+                        prefs.deviceName = it
+                    },
+                    onPresetChange = { IntercomService.updateJitterPreset(prefs, it) },
+                    onBitrateChange = { IntercomService.updateBitrateKbps(prefs, it) },
+                    onAudioCuesChange = { IntercomService.updateAudioCues(prefs, it) },
                     onBack = { showSettings = false }
                 )
                 state.active -> ActiveCallScreen(
                     state = state,
+                    onPickMusic = { musicPicker.launch(arrayOf("audio/*")) },
                     onOpenSettings = { showSettings = true },
                     onDisconnect = { IntercomService.stop(context) }
                 )
                 else -> LobbyScreen(
                     localIp = localIp,
+                    lastPeerIp = prefs.lastPeerIp,
+                    lastPeerName = prefs.lastPeerName,
                     peers = peers,
                     manualIp = manualIp,
                     batteryIgnored = isBatteryOptimizationIgnored(),
@@ -112,6 +159,7 @@ fun RideComApp(
                         peerDiscovery.start(deviceName)
                     },
                     onConnect = { ip ->
+                        prefs.lastPeerIp = ip
                         IntercomService.start(context, ip, deviceName)
                     },
                     onHostListen = {
@@ -128,6 +176,8 @@ fun RideComApp(
 @Composable
 private fun LobbyScreen(
     localIp: String?,
+    lastPeerIp: String,
+    lastPeerName: String,
     peers: List<DiscoveredPeer>,
     manualIp: String,
     batteryIgnored: Boolean,
@@ -143,17 +193,30 @@ private fun LobbyScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Branded Header with RideCom Logo
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("RideCom", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                Text("Offline Helmet Intercom • v0.1.3 Native Opus", fontSize = 13.sp, color = Color(0xFF9AA3B2))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    painter = painterResource(id = R.drawable.ridecom_logo),
+                    contentDescription = "RideCom Logo",
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, AccentEmerald.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                )
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("RideCom", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    Text("v1.0 • Native Opus Intercom", fontSize = 12.sp, color = AccentCyan)
+                }
             }
             Row {
                 IconButton(onClick = onRefreshIp) {
@@ -165,124 +228,237 @@ private fun LobbyScreen(
             }
         }
 
+        // Network Status Card
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF14181F)),
+            colors = CardDefaults.cardColors(containerColor = CardBg),
+            border = BorderStroke(1.dp, CardBorder),
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
                 modifier = Modifier.padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Default.Wifi,
-                    contentDescription = null,
-                    tint = if (localIp != null) Color(0xFF00E676) else Color(0xFFFF5252)
-                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background((if (localIp != null) AccentEmerald else AccentRed).copy(alpha = 0.15f))
+                ) {
+                    Icon(
+                        Icons.Default.Wifi,
+                        contentDescription = null,
+                        tint = if (localIp != null) AccentEmerald else AccentRed
+                    )
+                }
                 Spacer(Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (localIp != null) "Local IP: $localIp" else "No Wi-Fi / Hotspot detected",
-                        fontWeight = FontWeight.SemiBold,
+                        text = if (localIp != null) localIp else "No Wi-Fi / Hotspot",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
                         color = Color.White
                     )
                     Text(
-                        text = "Port 50000 • UDP + Opus 16kHz",
+                        text = "UDP :50000 • 16kHz VoIP + FEC",
                         fontSize = 12.sp,
-                        color = Color(0xFF8C96A6)
+                        color = TextSecondary
+                    )
+                }
+                Surface(
+                    color = (if (localIp != null) AccentEmerald else AccentRed).copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(50)
+                ) {
+                    Text(
+                        text = if (localIp != null) "READY" else "OFFLINE",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (localIp != null) AccentEmerald else AccentRed,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
             }
         }
 
         if (!batteryIgnored) {
-            OutlinedButton(
-                onClick = onRequestBatteryOpt,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFFCA28))
-            ) {
-                Text("Unlock Battery Limit (Recommended for Lock Screen)")
-            }
-        }
-
-        Button(
-            onClick = onHostListen,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
-        ) {
-            Text("Start Listening (Hotspot Host)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        }
-
-        if (gatewayIp != null) {
-            OutlinedButton(
-                onClick = { onConnect(gatewayIp) },
+            Card(
+                colors = CardDefaults.cardColors(containerColor = AccentAmber.copy(alpha = 0.12f)),
+                border = BorderStroke(1.dp, AccentAmber.copy(alpha = 0.45f)),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .clickable { onRequestBatteryOpt() }
             ) {
-                Text("Connect to Hotspot Host ($gatewayIp)")
-            }
-        }
-
-        Text("Nearby Riders (Auto-Discovery)", fontWeight = FontWeight.SemiBold, color = Color(0xFFB0BAC9))
-
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (peers.isEmpty()) {
-                item {
-                    Text(
-                        "Scanning local Wi-Fi via Bonjour/mDNS...",
-                        color = Color(0xFF6B7482),
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                }
-            } else {
-                items(peers) { peer ->
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A202B)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onConnect(peer.host) }
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(peer.name, fontWeight = FontWeight.Bold, color = Color.White)
-                                Text("${peer.host}:${peer.port}", fontSize = 12.sp, color = Color(0xFF9AA3B2))
-                            }
-                            Text("CONNECT", color = Color(0xFF00E676), fontWeight = FontWeight.Bold)
-                        }
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.BatteryChargingFull, contentDescription = null, tint = AccentAmber)
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Unlock Battery Limit", fontWeight = FontWeight.Bold, color = AccentAmber, fontSize = 13.sp)
+                        Text("Tap to keep voice smooth while screen is locked", fontSize = 11.sp, color = Color(0xFFD6DCE5))
                     }
                 }
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = manualIp,
-                onValueChange = onManualIpChange,
-                label = { Text("Manual Peer IP") },
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-            Button(
-                onClick = { if (manualIp.isNotBlank()) onConnect(manualIp.trim()) },
-                modifier = Modifier.height(54.dp)
+        // Quick 1-Tap Reconnect to Last Rider
+        if (lastPeerIp.isNotBlank()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                border = BorderStroke(1.dp, AccentCyan.copy(alpha = 0.45f)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onConnect(lastPeerIp) }
             ) {
-                Text("Join")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.History, contentDescription = null, tint = AccentCyan)
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Reconnect: ${lastPeerName.ifBlank { lastPeerIp }}",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(lastPeerIp, fontSize = 12.sp, color = TextSecondary)
+                        }
+                    }
+                    Surface(color = AccentCyan, shape = RoundedCornerShape(8.dp)) {
+                        Text(
+                            "JOIN",
+                            color = Color.Black,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Primary Action: Start Hosting (Listen)
+        Button(
+            onClick = onHostListen,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = AccentEmerald, contentColor = Color(0xFF002110))
+        ) {
+            Icon(Icons.Default.Podcasts, contentDescription = null)
+            Spacer(Modifier.width(10.dp))
+            Text("Start Hosting (Wait for Rider)", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+        }
+
+        // Hotspot Host Quick Connect
+        if (gatewayIp != null) {
+            OutlinedButton(
+                onClick = { onConnect(gatewayIp) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, AccentEmerald.copy(alpha = 0.55f))
+            ) {
+                Icon(Icons.Default.Router, contentDescription = null, tint = AccentEmerald)
+                Spacer(Modifier.width(8.dp))
+                Text("Connect to Hotspot Host ($gatewayIp)", color = AccentEmerald, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // Nearby Riders Auto-Discovery
+        Text(
+            "NEARBY RIDERS",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            color = TextSecondary
+        )
+
+        if (peers.isEmpty()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                border = BorderStroke(1.dp, CardBorder),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    "Scanning local Wi-Fi via Bonjour/mDNS...",
+                    color = TextSecondary,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+        } else {
+            peers.forEach { peer ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = CardBg),
+                    border = BorderStroke(1.dp, AccentEmerald.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onConnect(peer.host) }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(peer.name, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("${peer.host}:${peer.port}", fontSize = 12.sp, color = TextSecondary)
+                        }
+                        Text("CONNECT", color = AccentEmerald, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+
+        // Manual IP Card
+        Card(
+            colors = CardDefaults.cardColors(containerColor = CardBg),
+            border = BorderStroke(1.dp, CardBorder),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = manualIp,
+                    onValueChange = onManualIpChange,
+                    label = { Text("Direct Peer IP") },
+                    placeholder = { Text("192.168.x.x") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = AccentEmerald,
+                        unfocusedBorderColor = CardBorder
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = { if (manualIp.isNotBlank()) onConnect(manualIp.trim()) },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.height(54.dp)
+                ) {
+                    Text("Join", fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
@@ -291,200 +467,344 @@ private fun LobbyScreen(
 @Composable
 private fun ActiveCallScreen(
     state: IntercomState,
+    onPickMusic: () -> Unit,
     onOpenSettings: () -> Unit,
     onDisconnect: () -> Unit
 ) {
+    val normLevel = ((state.inputLevelDb + 70f) / 70f).coerceIn(0f, 1f)
+    val pulseScale by animateFloatAsState(
+        targetValue = if (state.voxOpen && !state.muted) 1.0f + (normLevel * 0.14f) else 1.0f,
+        label = "micPulse"
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Header & Live Telemetry
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        // Top Status + Telemetry Strip
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(if (state.peerConnected) AccentEmerald else AccentAmber)
+                )
+                Spacer(Modifier.width(10.dp))
                 Column {
                     Text(
                         text = if (state.peerConnected) state.peerName.ifBlank { "Rider Connected" } else "Waiting for Rider...",
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (state.peerConnected) Color(0xFF00E676) else Color(0xFFFFCA28)
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White
                     )
                     Text(
-                        text = state.peerIp.ifBlank { "Listening on UDP :50000" },
-                        fontSize = 13.sp,
-                        color = Color(0xFF8C96A6)
+                        text = state.peerIp.ifBlank { "Hosting on UDP :50000" },
+                        fontSize = 12.sp,
+                        color = TextSecondary
                     )
                 }
-                IconButton(onClick = onOpenSettings) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
-                }
             }
-
-            Spacer(Modifier.height(12.dp))
-
-            Surface(
-                color = Color(0xFF14181F),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    StatBadge("RTT", "${state.rttMs} ms")
-                    StatBadge("LOSS", String.format(Locale.US, "%.1f%%", state.packetLossPct))
-                    StatBadge("BUF", "${state.bufferMs} ms")
-                    StatBadge("AUDIO", if (state.audioRoute == AudioRoute.BLUETOOTH_HFP) "BT HFP" else state.audioRoute.label)
-                }
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
             }
         }
 
-        // Giant Glove-Friendly Main Button
-        val btnColor = when {
-            state.muted -> Color(0xFF424752)
-            state.pttMode && state.pttPressed -> Color(0xFF00E676)
-            state.pttMode -> Color(0xFF1E293B)
-            state.voxOpen -> Color(0xFF00E676)
-            else -> Color(0xFF153827)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = CardBg),
+            border = BorderStroke(1.dp, CardBorder),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp, horizontal = 8.dp),
+                horizontalArrangement = Arrangement.SpaceAround
+            ) {
+                StatBadge("RTT", "${state.rttMs} ms", if (state.rttMs in 1..60) AccentEmerald else Color.White)
+                StatBadge("LOSS", String.format(Locale.US, "%.1f%%", state.packetLossPct), if (state.packetLossPct < 3f) AccentEmerald else AccentAmber)
+                StatBadge("BUF", "${state.bufferMs} ms", AccentCyan)
+                StatBadge("ROUTE", if (state.audioRoute == AudioRoute.BLUETOOTH_HFP) "BT HFP" else state.audioRoute.label, Color.White)
+            }
+        }
+
+        // Giant Animated Glove-Friendly Mic / PTT Circle
+        val coreBrush = when {
+            state.muted -> Brush.radialGradient(listOf(Color(0xFF4B5563), Color(0xFF1F2937)))
+            state.pttMode && state.pttPressed -> Brush.radialGradient(listOf(AccentEmerald, Color(0xFF00A854)))
+            state.pttMode -> Brush.radialGradient(listOf(Color(0xFF1E293B), Color(0xFF0F172A)))
+            state.voxOpen -> Brush.radialGradient(listOf(AccentEmerald, Color(0xFF00994D)))
+            else -> Brush.radialGradient(listOf(Color(0xFF123524), Color(0xFF0A1F15)))
         }
 
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(210.dp)
-                .clip(CircleShape)
-                .background(btnColor)
-                .pointerInput(state.pttMode) {
-                    if (state.pttMode) {
-                        detectTapGestures(
-                            onPress = {
-                                IntercomService.instance?.setPttPressed(true)
-                                tryAwaitRelease()
-                                IntercomService.instance?.setPttPressed(false)
-                            }
-                        )
-                    } else {
-                        detectTapGestures(
-                            onTap = { IntercomService.instance?.toggleMute() }
-                        )
-                    }
-                }
+                .padding(vertical = 6.dp)
+                .size(230.dp)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = if (state.muted) Icons.Default.MicOff else Icons.Default.Mic,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(64.dp)
+            // Animated outer pulse aura
+            if (state.voxOpen && !state.muted) {
+                Box(
+                    modifier = Modifier
+                        .size(210.dp)
+                        .scale(pulseScale)
+                        .clip(CircleShape)
+                        .background(AccentEmerald.copy(alpha = 0.22f))
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = when {
-                        state.muted -> "MUTED"
-                        state.pttMode && state.pttPressed -> "TALKING"
-                        state.pttMode -> "HOLD TO TALK"
-                        state.voxOpen -> "LIVE (VOX)"
-                        else -> "OPEN MIC"
-                    },
-                    color = Color.White,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
+            }
+
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(196.dp)
+                    .clip(CircleShape)
+                    .background(coreBrush)
+                    .border(
+                        width = 2.dp,
+                        color = if (state.muted) AccentRed else if (state.voxOpen) AccentEmerald else CardBorder,
+                        shape = CircleShape
+                    )
+                    .pointerInput(state.pttMode) {
+                        if (state.pttMode) {
+                            detectTapGestures(
+                                onPress = {
+                                    IntercomService.instance?.setPttPressed(true)
+                                    tryAwaitRelease()
+                                    IntercomService.instance?.setPttPressed(false)
+                                }
+                            )
+                        } else {
+                            detectTapGestures(
+                                onTap = { IntercomService.instance?.toggleMute() }
+                            )
+                        }
+                    }
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = if (state.muted) Icons.Default.MicOff else Icons.Default.Mic,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(62.dp)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = when {
+                            state.muted -> "MUTED"
+                            state.pttMode && state.pttPressed -> "TALKING"
+                            state.pttMode -> "HOLD TO TALK"
+                            state.voxOpen -> "LIVE (VOX)"
+                            else -> "OPEN MIC"
+                        },
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = if (state.pttMode) "Press & Hold" else "Tap to Mute",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
 
-        // VOX Wind Gate & Controls
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        // Open Mic vs PTT Segmented Pill
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(CardBg)
+                .border(1.dp, CardBorder, RoundedCornerShape(14.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                FilterChip(
-                    selected = !state.pttMode,
-                    onClick = { IntercomService.instance?.setPttMode(false) },
-                    label = { Text("Open Mic (VOX)") },
-                    modifier = Modifier.weight(1f)
-                )
-                FilterChip(
-                    selected = state.pttMode,
-                    onClick = { IntercomService.instance?.setPttMode(true) },
-                    label = { Text("Push-To-Talk") },
-                    modifier = Modifier.weight(1f)
-                )
+            ModeSegment("Open Mic (VOX)", selected = !state.pttMode, modifier = Modifier.weight(1f)) {
+                IntercomService.instance?.setPttMode(false)
             }
+            ModeSegment("Push-To-Talk", selected = state.pttMode, modifier = Modifier.weight(1f)) {
+                IntercomService.instance?.setPttMode(true)
+            }
+        }
 
-            if (!state.pttMode) {
-                Column(modifier = Modifier.fillMaxWidth()) {
+        // VOX Wind Gate Card
+        if (!state.pttMode) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                border = BorderStroke(1.dp, CardBorder),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Wind Gate (VOX)", color = Color(0xFFB0BAC9), fontSize = 13.sp)
+                        Text("Wind Gate (VOX)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                         Text(
-                            "${state.voxThresholdDb.toInt()} dB (In: ${state.inputLevelDb.toInt()} dB)",
-                            color = Color(0xFF00E676),
-                            fontSize = 13.sp
+                            "${state.voxThresholdDb.toInt()} dB  •  In: ${state.inputLevelDb.toInt()} dB",
+                            color = AccentEmerald,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
                         )
                     }
-                    val normalizedLevel = ((state.inputLevelDb + 70f) / 70f).coerceIn(0f, 1f)
+                    Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(
-                        progress = { normalizedLevel },
+                        progress = { normLevel },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp)
-                            .padding(vertical = 2.dp),
-                        color = if (state.voxOpen) Color(0xFF00E676) else Color(0xFF475569)
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = if (state.voxOpen) AccentEmerald else Color(0xFF475569),
+                        trackColor = Color(0xFF1E293B)
                     )
                     Slider(
                         value = state.voxThresholdDb,
                         onValueChange = { IntercomService.instance?.setVoxThreshold(it) },
-                        valueRange = -70f..-10f
+                        valueRange = -70f..-10f,
+                        colors = SliderDefaults.colors(thumbColor = AccentEmerald, activeTrackColor = AccentEmerald)
                     )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { IntercomService.instance?.toggleAudioRoute() },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(52.dp)
-                ) {
-                    Icon(
-                        if (state.preferBluetooth) Icons.Default.BluetoothAudio else Icons.Default.VolumeUp,
-                        contentDescription = null
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (state.preferBluetooth) "Bluetooth" else "Speaker")
-                }
-
-                Button(
-                    onClick = onDisconnect,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(52.dp)
-                ) {
-                    Icon(Icons.Default.CallEnd, contentDescription = null, tint = Color.White)
-                    Spacer(Modifier.width(6.dp))
-                    Text("End", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         }
+
+        // RideDJ Shared Music Card (with Auto Voice Ducking)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = CardBg),
+            border = BorderStroke(1.dp, if (state.musicPlaying) AccentCyan.copy(alpha = 0.5f) else CardBorder),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.MusicNote, contentDescription = null, tint = AccentCyan)
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = if (state.musicLoaded) state.musicTrackTitle else "Share Music (RideDJ)",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = if (state.musicLoaded) "Auto-ducks when riding partners talk" else "Pick MP3/M4A to listen together",
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
+                    if (!state.musicLoaded) {
+                        OutlinedButton(
+                            onClick = onPickMusic,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AccentCyan)
+                        ) {
+                            Text("Pick Song", color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Row {
+                            IconButton(onClick = { IntercomService.instance?.toggleMusicPlayPause() }) {
+                                Icon(
+                                    if (state.musicPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = "Play/Pause",
+                                    tint = AccentCyan
+                                )
+                            }
+                            IconButton(onClick = { IntercomService.instance?.stopMusic() }) {
+                                Icon(Icons.Default.Close, contentDescription = "Stop Music", tint = TextSecondary)
+                            }
+                        }
+                    }
+                }
+
+                if (state.musicLoaded) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Vol ${(state.musicVolume * 100).toInt()}%", color = TextSecondary, fontSize = 11.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Slider(
+                            value = state.musicVolume,
+                            onValueChange = { IntercomService.instance?.setMusicVolume(it) },
+                            valueRange = 0.05f..0.80f,
+                            colors = SliderDefaults.colors(thumbColor = AccentCyan, activeTrackColor = AccentCyan),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Bottom Glove-Friendly Action Bar
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = { IntercomService.instance?.toggleAudioRoute() },
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, CardBorder),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp)
+            ) {
+                Icon(
+                    if (state.preferBluetooth) Icons.Default.BluetoothAudio else Icons.Default.VolumeUp,
+                    contentDescription = null,
+                    tint = Color.White
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(if (state.preferBluetooth) "Bluetooth" else "Speaker", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+
+            Button(
+                onClick = onDisconnect,
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentRed),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp)
+            ) {
+                Icon(Icons.Default.CallEnd, contentDescription = null, tint = Color.White)
+                Spacer(Modifier.width(6.dp))
+                Text("End Ride", color = Color.White, fontWeight = FontWeight.ExtraBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeSegment(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) AccentEmerald else Color.Transparent)
+            .clickable { onClick() }
+            .padding(vertical = 10.dp)
+    ) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (selected) Color(0xFF002010) else TextSecondary
+        )
     }
 }
 
@@ -495,62 +815,127 @@ private fun SettingsScreen(
     onDeviceNameChange: (String) -> Unit,
     onPresetChange: (JitterPreset) -> Unit,
     onBitrateChange: (Int) -> Unit,
+    onAudioCuesChange: (Boolean) -> Unit,
     onBack: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Settings", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Spacer(Modifier.width(4.dp))
+            Text("Settings", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+        }
 
         OutlinedTextField(
             value = deviceName,
             onValueChange = onDeviceNameChange,
-            label = { Text("Rider Name") },
+            label = { Text("Rider Display Name") },
             singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = AccentEmerald,
+                unfocusedBorderColor = CardBorder
+            ),
             modifier = Modifier.fillMaxWidth()
         )
 
-        Text("Jitter Buffer Preset", fontWeight = FontWeight.SemiBold, color = Color(0xFFB0BAC9))
-        JitterPreset.entries.forEach { preset ->
-            FilterChip(
-                selected = state.jitterPreset == preset,
-                onClick = { onPresetChange(preset) },
-                label = { Text(preset.label) },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        Text("Opus Bitrate (VoIP)", fontWeight = FontWeight.SemiBold, color = Color(0xFFB0BAC9))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(16, 24, 32).forEach { kbps ->
-                FilterChip(
-                    selected = state.bitrateKbps == kbps,
-                    onClick = { onBitrateChange(kbps) },
-                    label = { Text("$kbps kbps") }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = CardBg),
+            border = BorderStroke(1.dp, CardBorder),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("In-Helmet Audio Cues", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Play soft chime on connect, disconnect & mute", color = TextSecondary, fontSize = 12.sp)
+                }
+                Switch(
+                    checked = state.audioCuesEnabled,
+                    onCheckedChange = onAudioCuesChange,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.Black, checkedTrackColor = AccentEmerald)
                 )
             }
         }
 
-        Spacer(Modifier.weight(1f))
-
-        Button(
-            onClick = onBack,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-        ) {
-            Text("Done")
+        Text("JITTER BUFFER PRESET", fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, color = TextSecondary)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            JitterPreset.entries.forEach { preset ->
+                val selected = state.jitterPreset == preset
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = if (selected) AccentEmerald.copy(alpha = 0.14f) else CardBg),
+                    border = BorderStroke(1.dp, if (selected) AccentEmerald else CardBorder),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onPresetChange(preset) }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(preset.label, color = Color.White, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                        if (selected) {
+                            Text("ACTIVE", color = AccentEmerald, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                }
+            }
         }
+
+        Text("OPUS BITRATE (VOIP + FEC)", fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, color = TextSecondary)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            listOf(16, 24, 32).forEach { kbps ->
+                val selected = state.bitrateKbps == kbps
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) AccentEmerald else CardBg)
+                        .border(1.dp, if (selected) AccentEmerald else CardBorder, RoundedCornerShape(12.dp))
+                        .clickable { onBitrateChange(kbps) }
+                        .padding(vertical = 12.dp)
+                ) {
+                    Text(
+                        "$kbps kbps",
+                        fontWeight = FontWeight.Bold,
+                        color = if (selected) Color.Black else Color.White
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "RideCom v1.0.0 • Native C libopus 1.5.2 • 100% Offline UDP",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
     }
 }
 
 @Composable
-private fun StatBadge(title: String, value: String) {
+private fun StatBadge(title: String, value: String, valueColor: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(title, fontSize = 10.sp, color = Color(0xFF7B8794))
-        Text(value, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Text(title, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
+        Spacer(Modifier.height(2.dp))
+        Text(value, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = valueColor)
     }
 }

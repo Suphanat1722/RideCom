@@ -1,33 +1,23 @@
-# RideCom — Offline Motorcycle Helmet Intercom
+<p align="center">
+  <img src="assets/ridecom-logo.png" width="140" alt="RideCom Logo" />
+</p>
 
-Ultra-low-latency, 100% offline, full-duplex intercom between **Android** and **iPhone** over local Wi-Fi Hotspot — built for Bluetooth helmet headsets without built-in intercom, with true lock-screen background support and **zero Apple Developer fees**.
+# RideCom v1.0 — Offline Motorcycle Helmet Intercom
 
-## Architecture
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system design and binary protocol specification.
+Ultra-low-latency, 100% offline, full-duplex intercom between **Android**, **iPhone**, and **Windows PC** over local Wi-Fi Hotspot — built for Bluetooth helmet headsets without built-in intercom, with true lock-screen background operation and **zero Apple Developer fees**.
 
-- **Android (`android/`):** Kotlin + Jetpack Compose + Low-Latency `AudioRecord`/`AudioTrack` + Bluetooth HFP SCO + `Concentus` Opus (16 kHz VoIP, In-band FEC & PLC) + `ForegroundService` (`PARTIAL_WAKE_LOCK` + `WIFI_MODE_FULL_LOW_LATENCY`).
-- **iOS (`ios/`):** Swift + SwiftUI + `AVAudioEngine` (`VoiceProcessingIO`) + `alta/swift-opus` + `UIBackgroundModes: audio` + Bonjour (`_ridecom._udp`) + POSIX UDP (zero paid entitlements — 100% Free Apple ID / SideStore compatible).
+## Features (v1.0.0)
+- **Native C `libopus` (v1.5.2) + Hardware-Clock Audio:** ~0.2–0.4 ms/frame on Android (zero JIT warmup stutter), `AVAudioEngine` (`VoiceProcessingIO`) on iOS, and pull-driven `JitterWaveProvider` on Windows PC.
+- **100% Offline Instant Auto-Heal:** Stateless Unicast UDP (`:50000`) + Bonjour/mDNS auto-discovery + 1-Tap Hotspot Host & 1-Tap Reconnect to Last Rider.
+- **In-Helmet Audio Cues:** Soft synthesized chimes on connect, disconnect, and mute so you know your status with the phone locked in your pocket.
+- **RideDJ Shared Music + Auto Voice Ducking:** Share local MP3/M4A/WAV songs with your riding partner in sync — music smoothly ducks to 25% whenever either rider speaks.
+- **GPS & Background Coexistence:** Plays nicely with Google Maps navigation prompts (`.mixWithOthers` on iOS) and auto-switches when your Bluetooth helmet headset connects (`AudioDeviceCallback` on Android).
+- **Glove-Friendly OLED Cockpit UI:** Giant animated pulsing Mic/PTT button, live RTT/Loss/Buffer telemetry, and real-time Wind Gate (VOX) tuning.
 
-## Automated Free Build (No Mac Required)
-Push this repository to GitHub (public or private). The workflow in `.github/workflows/build.yml` automatically builds:
-1. **`RideCom-Android-APK`** (`app-debug.apk`)
-2. **`RideCom-iOS-Unsigned-IPA`** (`RideCom-unsigned.ipa` ready for SideStore / AltStore)
+## Automated Free Builds (GitHub Actions)
+Every push to `main` builds:
+1. **`RideCom-Android-APK`** (`app-debug.apk` with Native C `libopus` for `arm64-v8a` & `armeabi-v7a`)
+2. **`RideCom-iOS-Unsigned-IPA`** (`RideCom-unsigned.ipa` ready for SideStore / Sideloadly)
+3. **`RideCom-Windows-PC`** (Standalone single-file `RideComPC.exe`)
 
-### Installing on Devices
-- **Android (Samsung Galaxy A12 via `adb`):**
-  ```powershell
-  adb install -r app-debug.apk
-  ```
-- **iPhone (iPhone 11 via SideStore):**
-  1. Download `RideCom-unsigned.ipa` from GitHub Actions Artifacts onto your iPhone.
-  2. Open **SideStore** → tap `+` → select `RideCom-unsigned.ipa`.
-  3. On first launch, allow **Microphone** and **Local Network** permissions.
-
-## Quick Usage Guide
-1. Turn on **Mobile Hotspot** on one phone (no mobile data/internet needed) and connect the other phone to that Wi-Fi.
-   - *Note for Galaxy A12 (`SM-A127F`):* The A12 uses 2.4 GHz Wi-Fi. If hosting from iPhone 11, enable **"Maximize Compatibility"** in Personal Hotspot settings.
-2. Connect your Bluetooth helmet headsets to each phone.
-3. Open **RideCom** on both phones:
-   - Host phone: tap **Start Listening (Hotspot Host)**.
-   - Client phone: tap the auto-discovered rider, or tap **Connect to Hotspot Host (`x.x.x.1`)**.
-4. Adjust the **Wind Gate (VOX)** slider while speaking so wind noise stays muted and speech opens cleanly, then lock your screen and ride!
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical design and RideCom Protocol v1 specification.
