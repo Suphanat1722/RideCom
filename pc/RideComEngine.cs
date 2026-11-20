@@ -45,19 +45,21 @@ public sealed record RideComStatus(
     int RttMs,
     float PacketLossPct,
     float InputLevelDb,
-    bool VoxOpen
+    bool VoxOpen,
+    int BufferDepthMs
 );
 
 /// <summary>
-/// Sequence-ordered jitter buffer with 60ms pre-buffer and clean talkspurt re-sync.
+/// Sequence-ordered jitter buffer with configurable pre-buffer, gentle 1-frame catch-up,
+/// and 120ms talkspurt re-sync (absorbs 2.4GHz Wi-Fi/BT bursts without chopping mid-word).
 /// </summary>
 internal sealed class PcJitterBuffer
 {
-    private const int Capacity = 32;
+    private const int Capacity = 64;
     private readonly (int Seq, byte[] Payload)?[] _slots = new (int, byte[])?[Capacity];
     private readonly object _lock = new();
 
-    private const int TargetFrames = 3; // 60ms smooth buffer for PC WaveOut
+    private int _targetFrames = 3; // 60ms default
     private bool _initialized;
     private bool _buffering = true;
     private int _nextReadSeq;
@@ -66,6 +68,14 @@ internal sealed class PcJitterBuffer
 
     public long TotalExpected { get; private set; }
     public long TotalLost { get; private set; }
+
+    public void SetTargetFrames(int frames)
+    {
+        lock (_lock)
+        {
+            _targetFrames = Math.Clamp(frames, 1, 8);
+        }
+    }
 
     public void Reset()
     {
@@ -79,6 +89,16 @@ internal sealed class PcJitterBuffer
             _consecutiveMissing = 0;
             TotalExpected = 0;
             TotalLost = 0;
+        }
+    }
+
+    public int CurrentDepthMs()
+    {
+        lock (_lock)
+        {
+            if (!_initialized) return 0;
+            int d = Math.Max(0, SeqDiff(_highestSeenSeq, _nextReadSeq) + 1);
+            return d * RideComProtocol.FrameMs;
         }
     }
 
@@ -106,9 +126,9 @@ internal sealed class PcJitterBuffer
             else
             {
                 int diff = SeqDiff(normSeq, _nextReadSeq);
-                if (diff < -4 || diff > 25)
+                if (diff < -6 || diff > 40)
                 {
-                    if (diff > 25 || diff < -25)
+                    if (diff > 40 || diff < -40)
                     {
                         Array.Clear(_slots);
                         _nextReadSeq = normSeq;
@@ -143,7 +163,7 @@ internal sealed class PcJitterBuffer
             int depth = SeqDiff(_highestSeenSeq, _nextReadSeq) + 1;
             if (_buffering)
             {
-                if (depth >= TargetFrames)
+                if (depth >= _targetFrames)
                 {
                     _buffering = false;
                     _consecutiveMissing = 0;
@@ -154,14 +174,10 @@ internal sealed class PcJitterBuffer
                 }
             }
 
-            if (depth > TargetFrames + 5)
+            if (depth > _targetFrames + 6)
             {
-                int skip = depth - TargetFrames;
-                for (int i = 0; i < skip; i++)
-                {
-                    _slots[(_nextReadSeq + i) % Capacity] = null;
-                }
-                _nextReadSeq = (_nextReadSeq + skip) & 0xFFFF;
+                _slots[_nextReadSeq % Capacity] = null;
+                _nextReadSeq = (_nextReadSeq + 1) & 0xFFFF;
             }
 
             int idx = _nextReadSeq % Capacity;
@@ -177,7 +193,7 @@ internal sealed class PcJitterBuffer
             }
 
             _consecutiveMissing++;
-            if (_consecutiveMissing >= 4)
+            if (_consecutiveMissing >= 6) // 120ms silence => talkspurt ended
             {
                 Array.Clear(_slots);
                 _initialized = false;
@@ -202,6 +218,123 @@ internal sealed class PcJitterBuffer
     }
 }
 
+/// <summary>
+/// Hardware-clock pull-driven IWaveProvider.
+/// Eliminates Windows Thread.Sleep(20) 15.6ms timer jitter and BufferedWaveProvider underruns completely.
+/// </summary>
+internal sealed class JitterWaveProvider : IWaveProvider
+{
+    private readonly PcJitterBuffer _jitterBuffer;
+    private readonly OpusDecoder _decoder;
+    private readonly object _decodeLock;
+    private readonly short[] _decodeScratch = new short[RideComProtocol.FrameSamples];
+    private readonly byte[] _frameBytes = new byte[RideComProtocol.FrameBytes];
+    private int _frameOffset = RideComProtocol.FrameBytes;
+    private int _consecutivePlc;
+    private bool _wasPlaying;
+
+    public WaveFormat WaveFormat { get; } = new(RideComProtocol.SampleRate, 16, RideComProtocol.Channels);
+    public volatile float Volume = 0.70f;
+
+    public JitterWaveProvider(PcJitterBuffer jitterBuffer, OpusDecoder decoder, object decodeLock)
+    {
+        _jitterBuffer = jitterBuffer;
+        _decoder = decoder;
+        _decodeLock = decodeLock;
+    }
+
+    public int Read(byte[] buffer, int offset, int count)
+    {
+        int written = 0;
+        while (written < count)
+        {
+            if (_frameOffset >= RideComProtocol.FrameBytes)
+            {
+                FillNextFrame();
+                _frameOffset = 0;
+            }
+
+            int avail = RideComProtocol.FrameBytes - _frameOffset;
+            int toCopy = Math.Min(avail, count - written);
+            Buffer.BlockCopy(_frameBytes, _frameOffset, buffer, offset + written, toCopy);
+            _frameOffset += toCopy;
+            written += toCopy;
+        }
+        return written;
+    }
+
+    private void FillNextFrame()
+    {
+        int status = _jitterBuffer.Pop(out var opus);
+        bool hasAudio = false;
+
+        if (status == 1 && opus != null)
+        {
+            _consecutivePlc = 0;
+            int decoded;
+            lock (_decodeLock)
+            {
+                decoded = _decoder.Decode(opus, 0, opus.Length, _decodeScratch, 0, RideComProtocol.FrameSamples, false);
+            }
+            if (decoded > 0)
+            {
+                hasAudio = true;
+                if (!_wasPlaying)
+                {
+                    ApplyFade(_decodeScratch, fadeIn: true);
+                }
+            }
+        }
+        else if (status == 0 && _consecutivePlc < 4)
+        {
+            _consecutivePlc++;
+            int decoded;
+            lock (_decodeLock)
+            {
+                decoded = _decoder.Decode((byte[]?)null, 0, 0, _decodeScratch, 0, RideComProtocol.FrameSamples, false);
+            }
+            if (decoded > 0)
+            {
+                hasAudio = true;
+                if (_consecutivePlc == 4)
+                {
+                    ApplyFade(_decodeScratch, fadeIn: false);
+                }
+            }
+        }
+
+        if (hasAudio)
+        {
+            _wasPlaying = true;
+            float vol = Volume;
+            if (vol < 0.99f)
+            {
+                for (int i = 0; i < RideComProtocol.FrameSamples; i++)
+                {
+                    _decodeScratch[i] = (short)Math.Clamp(_decodeScratch[i] * vol, short.MinValue, short.MaxValue);
+                }
+            }
+            Buffer.BlockCopy(_decodeScratch, 0, _frameBytes, 0, RideComProtocol.FrameBytes);
+        }
+        else
+        {
+            _wasPlaying = false;
+            Array.Clear(_frameBytes, 0, _frameBytes.Length);
+        }
+    }
+
+    private static void ApplyFade(short[] pcm, bool fadeIn)
+    {
+        const int ramp = 32; // 2ms smooth ramp eliminates clicks/pops
+        for (int i = 0; i < ramp && i < pcm.Length; i++)
+        {
+            float gain = fadeIn ? (i / (float)ramp) : (1f - i / (float)ramp);
+            int idx = fadeIn ? i : (pcm.Length - ramp + i);
+            pcm[idx] = (short)(pcm[idx] * gain);
+        }
+    }
+}
+
 public sealed class RideComEngine : IDisposable
 {
     private readonly ushort _senderId = (ushort)Random.Shared.Next(1, 65535);
@@ -213,11 +346,11 @@ public sealed class RideComEngine : IDisposable
     private readonly OpusEncoder _encoder;
     private readonly OpusDecoder _decoder;
     private readonly PcJitterBuffer _jitterBuffer = new();
+    private JitterWaveProvider? _waveProvider;
 
     private UdpClient? _udp;
     private WaveInEvent? _waveIn;
     private WaveOutEvent? _waveOut;
-    private BufferedWaveProvider? _playBuffer;
     private CancellationTokenSource? _cts;
 
     private IPEndPoint? _peerEndpoint;
@@ -228,9 +361,6 @@ public sealed class RideComEngine : IDisposable
 
     private readonly List<byte> _captureAccum = new(RideComProtocol.FrameBytes * 4);
     private readonly byte[] _opusScratch = new byte[1276];
-    private readonly short[] _decodeScratch = new short[RideComProtocol.FrameSamples];
-    private readonly byte[] _pcmOutScratch = new byte[RideComProtocol.FrameBytes];
-    private readonly byte[] _silenceFrame = new byte[RideComProtocol.FrameBytes];
 
     private long _lastVoxOpenMs;
     private float _lastInputDb = -90f;
@@ -254,12 +384,23 @@ public sealed class RideComEngine : IDisposable
         _decoder = OpusDecoder.Create(RideComProtocol.SampleRate, RideComProtocol.Channels);
     }
 
-    public void Start(string? targetIp, int inputDeviceIndex, int outputDeviceIndex)
+    public void SetBufferFrames(int frames) => _jitterBuffer.SetTargetFrames(frames);
+
+    public void SetOutputVolume(float volume)
+    {
+        if (_waveProvider != null)
+        {
+            _waveProvider.Volume = Math.Clamp(volume, 0f, 1f);
+        }
+    }
+
+    public void Start(string? targetIp, int inputDeviceIndex, int outputDeviceIndex, int bufferFrames = 3, float outputVolume = 0.70f)
     {
         if (Active) return;
 
         _cts = new CancellationTokenSource();
         _jitterBuffer.Reset();
+        _jitterBuffer.SetTargetFrames(bufferFrames);
         _lastPeerRxMs = 0;
         _rttMs = 0;
         _peerName = "";
@@ -279,19 +420,18 @@ public sealed class RideComEngine : IDisposable
         var waveFormat = new WaveFormat(RideComProtocol.SampleRate, 16, RideComProtocol.Channels);
         if (outputDeviceIndex >= 0 && outputDeviceIndex < WaveOut.DeviceCount)
         {
-            _playBuffer = new BufferedWaveProvider(waveFormat)
+            _waveProvider = new JitterWaveProvider(_jitterBuffer, _decoder, _decodeLock)
             {
-                DiscardOnBufferOverflow = true,
-                BufferDuration = TimeSpan.FromMilliseconds(500)
+                Volume = Math.Clamp(outputVolume, 0f, 1f)
             };
 
             _waveOut = new WaveOutEvent
             {
                 DeviceNumber = outputDeviceIndex,
-                DesiredLatency = 80,
+                DesiredLatency = 60,
                 NumberOfBuffers = 3
             };
-            _waveOut.Init(_playBuffer);
+            _waveOut.Init(_waveProvider);
             _waveOut.Play();
         }
 
@@ -311,7 +451,6 @@ public sealed class RideComEngine : IDisposable
 
         var token = _cts.Token;
         Task.Run(() => ReceiveLoop(token), token);
-        Task.Run(() => PlaybackLoop(token), token);
         Task.Run(() => KeepAliveLoop(token), token);
         EmitStatus();
     }
@@ -367,7 +506,7 @@ public sealed class RideComEngine : IDisposable
 
         _waveIn = null;
         _waveOut = null;
-        _playBuffer = null;
+        _waveProvider = null;
         _udp = null;
         _cts?.Dispose();
         _cts = null;
@@ -516,73 +655,6 @@ public sealed class RideComEngine : IDisposable
         }
     }
 
-    private void PlaybackLoop(CancellationToken token)
-    {
-        long nextTickMs = _clock.ElapsedMilliseconds;
-        int consecutivePlc = 0;
-
-        while (!token.IsCancellationRequested && Active)
-        {
-            nextTickMs += RideComProtocol.FrameMs;
-
-            var playBuf = _playBuffer;
-            if (playBuf != null)
-            {
-                // Keep WaveOut buffer healthy without letting latency creep above 120ms
-                if (playBuf.BufferedBytes > RideComProtocol.FrameBytes * 6)
-                {
-                    playBuf.ClearBuffer();
-                }
-
-                int status = _jitterBuffer.Pop(out var opus);
-                if (status == 1 && opus != null)
-                {
-                    consecutivePlc = 0;
-                    int decoded;
-                    lock (_decodeLock)
-                    {
-                        decoded = _decoder.Decode(opus, 0, opus.Length, _decodeScratch, 0, RideComProtocol.FrameSamples, false);
-                    }
-                    if (decoded > 0)
-                    {
-                        int bytes = decoded * 2;
-                        Buffer.BlockCopy(_decodeScratch, 0, _pcmOutScratch, 0, bytes);
-                        playBuf.AddSamples(_pcmOutScratch, 0, bytes);
-                    }
-                }
-                else if (status == 0 && consecutivePlc < 3)
-                {
-                    consecutivePlc++;
-                    int decoded;
-                    lock (_decodeLock)
-                    {
-                        decoded = _decoder.Decode((byte[]?)null, 0, 0, _decodeScratch, 0, RideComProtocol.FrameSamples, false);
-                    }
-                    if (decoded > 0)
-                    {
-                        int bytes = decoded * 2;
-                        Buffer.BlockCopy(_decodeScratch, 0, _pcmOutScratch, 0, bytes);
-                        playBuf.AddSamples(_pcmOutScratch, 0, bytes);
-                    }
-                }
-                else if (playBuf.BufferedBytes < RideComProtocol.FrameBytes * 2)
-                {
-                    playBuf.AddSamples(_silenceFrame, 0, _silenceFrame.Length);
-                }
-            }
-
-            long sleepMs = nextTickMs - _clock.ElapsedMilliseconds;
-            if (sleepMs > 1)
-            {
-                Thread.Sleep((int)sleepMs);
-            }
-            else if (sleepMs < -100)
-            {
-                nextTickMs = _clock.ElapsedMilliseconds;
-            }
-        }
-    }
-
     private async Task KeepAliveLoop(CancellationToken token)
     {
         while (!token.IsCancellationRequested && Active)
@@ -614,10 +686,7 @@ public sealed class RideComEngine : IDisposable
         }
     }
 
-    private void SendControl(PacketType type, byte[] payload)
-    {
-        SendPacket(type, 0, 0, payload);
-    }
+    private void SendControl(PacketType type, byte[] payload) => SendPacket(type, 0, 0, payload);
 
     private void SendPacket(PacketType type, byte flags, ushort seq, byte[] payload)
     {
@@ -659,7 +728,8 @@ public sealed class RideComEngine : IDisposable
             RttMs: alive ? _rttMs : 0,
             PacketLossPct: _jitterBuffer.PacketLossPercent(),
             InputLevelDb: _lastInputDb,
-            VoxOpen: _lastVoxOpen
+            VoxOpen: _lastVoxOpen,
+            BufferDepthMs: _jitterBuffer.CurrentDepthMs()
         ));
     }
 
