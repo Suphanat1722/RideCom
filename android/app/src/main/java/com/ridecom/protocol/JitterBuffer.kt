@@ -16,6 +16,7 @@ sealed class PopResult {
 
 /**
  * Thread-safe, uint16 wrap-around-safe ring jitter buffer for 20ms Opus frames.
+ * Automatically re-syncs cleanly after VOX / silence pauses without sequence drift.
  */
 class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
     private val capacity = 32
@@ -28,6 +29,7 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
     private var nextReadSeq = 0
     private var highestSeenSeq = 0
     private var stableReads = 0
+    private var consecutiveMissing = 0
 
     var totalExpected: Long = 0L
         private set
@@ -50,6 +52,7 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
         nextReadSeq = 0
         highestSeenSeq = 0
         stableReads = 0
+        consecutiveMissing = 0
         totalExpected = 0L
         totalLost = 0L
     }
@@ -71,15 +74,16 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
             buffering = true
             nextReadSeq = normSeq
             highestSeenSeq = normSeq
+            consecutiveMissing = 0
         } else {
             val diffFromRead = seqDiff(normSeq, nextReadSeq)
-            // Drop very late packets or reset on huge jump (e.g., sender restarted)
             if (diffFromRead < -4 || diffFromRead > 25) {
                 if (diffFromRead > 25 || diffFromRead < -25) {
                     slots.fill(null)
                     nextReadSeq = normSeq
                     highestSeenSeq = normSeq
                     buffering = true
+                    consecutiveMissing = 0
                 } else {
                     return
                 }
@@ -99,13 +103,14 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
         if (buffering) {
             if (bufferedDepth >= currentTargetFrames) {
                 buffering = false
+                consecutiveMissing = 0
             } else {
                 return PopResult.Buffering
             }
         }
 
         // Catch up if buffer grows too large (prevents creeping latency)
-        val maxAllowedDepth = (currentTargetFrames + 3).coerceAtMost(10)
+        val maxAllowedDepth = (currentTargetFrames + 4).coerceAtMost(12)
         if (bufferedDepth > maxAllowedDepth) {
             val skip = bufferedDepth - currentTargetFrames
             for (i in 0 until skip) {
@@ -114,12 +119,13 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
             nextReadSeq = (nextReadSeq + skip) and 0xFFFF
         }
 
-        totalExpected++
         val idx = nextReadSeq % capacity
         val slot = slots[idx]
         if (slot != null && slot.seq == nextReadSeq) {
             slots[idx] = null
             nextReadSeq = (nextReadSeq + 1) and 0xFFFF
+            consecutiveMissing = 0
+            totalExpected++
             if (preset.adaptive) {
                 stableReads++
                 if (stableReads >= 150 && currentTargetFrames > 1) {
@@ -130,7 +136,18 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
             return PopResult.Frame(slot.payload, slot.flags)
         }
 
-        // Missing packet: check if next packet is already here for In-Band FEC recovery
+        consecutiveMissing++
+        // If 4+ consecutive frames are absent (80ms+), treat as talkspurt end / VOX silence.
+        // Re-arm cleanly so the next talkspurt syncs immediately without dropping packets!
+        if (consecutiveMissing >= 4) {
+            slots.fill(null)
+            initialized = false
+            buffering = true
+            consecutiveMissing = 0
+            return PopResult.Buffering
+        }
+
+        totalExpected++
         totalLost++
         stableReads = 0
         if (preset.adaptive && currentTargetFrames < 5) {

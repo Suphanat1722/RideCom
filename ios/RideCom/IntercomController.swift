@@ -13,7 +13,7 @@ final class IntercomController: ObservableObject {
     @Published var pttPressed = false
     @Published var voxOpen = false
     @Published var inputLevelDb: Float = -90.0
-    @Published var voxThresholdDb: Float = -42.0 {
+    @Published var voxThresholdDb: Float = -58.0 {
         didSet { voxGate.thresholdDb = voxThresholdDb }
     }
     @Published var rttMs = 0

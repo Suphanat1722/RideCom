@@ -1,8 +1,8 @@
 import Foundation
 
 final class VoxGate {
-    var thresholdDb: Float = -42.0
-    var hangoverMs: Double = 350.0
+    var thresholdDb: Float = -58.0
+    var hangoverMs: Double = 400.0
     private(set) var lastLevelDb: Float = -90.0
     private var lastOpenTimeMs: Double = 0.0
 

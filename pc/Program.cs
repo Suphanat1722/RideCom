@@ -133,7 +133,7 @@ public sealed class MainForm : Form
         Controls.Add(_statsLabel);
         y += 30;
 
-        _voxLabel.Text = "Wind Gate (VOX): -45 dB";
+        _voxLabel.Text = "Wind Gate (VOX): -58 dB";
         _voxLabel.Location = new Point(20, y);
         _voxLabel.Size = new Size(400, 22);
         Controls.Add(_voxLabel);
@@ -150,7 +150,7 @@ public sealed class MainForm : Form
         _voxSlider.Size = new Size(408, 42);
         _voxSlider.Minimum = -70;
         _voxSlider.Maximum = -10;
-        _voxSlider.Value = -45;
+        _voxSlider.Value = -58;
         _voxSlider.TickFrequency = 10;
         _voxSlider.ValueChanged += (_, _) =>
         {

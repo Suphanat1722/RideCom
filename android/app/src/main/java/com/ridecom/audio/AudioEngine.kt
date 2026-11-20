@@ -60,7 +60,7 @@ class AudioEngine(private val context: Context) {
             RideComProtocol.SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
-        ).coerceAtLeast(frameBytes * 2)
+        ).coerceAtLeast(frameBytes * 6)
 
         val record = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -86,7 +86,7 @@ class AudioEngine(private val context: Context) {
             RideComProtocol.SAMPLE_RATE,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT
-        ).coerceAtLeast(frameBytes * 2)
+        ).coerceAtLeast(frameBytes * 4)
 
         val track = AudioTrack.Builder()
             .setAudioAttributes(

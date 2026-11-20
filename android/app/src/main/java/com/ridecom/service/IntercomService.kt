@@ -12,6 +12,8 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.ridecom.audio.AudioEngine
 import com.ridecom.audio.AudioRoute
@@ -39,7 +41,7 @@ data class IntercomState(
     val pttPressed: Boolean = false,
     val voxOpen: Boolean = false,
     val inputLevelDb: Float = -90f,
-    val voxThresholdDb: Float = -42f,
+    val voxThresholdDb: Float = -58f,
     val rttMs: Int = 0,
     val packetLossPct: Float = 0f,
     val bufferMs: Int = 40,
@@ -62,6 +64,11 @@ class IntercomService : Service() {
 
     private var consecutivePlc = 0
     private var uiTickCounter = 0
+    private var perfEncCount = 0
+    private var perfEncTotalUs = 0L
+    private var perfDecCount = 0
+    private var perfDecTotalUs = 0L
+    private var perfLastLogMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -153,10 +160,22 @@ class IntercomService : Service() {
                     else -> gateOpen
                 }
                 if (shouldTx) {
+                    val t0 = System.nanoTime()
                     val encoded = codec.encode(pcm)
+                    perfEncTotalUs += (System.nanoTime() - t0) / 1000L
+                    perfEncCount++
                     val flags = RideComProtocol.FLAG_VOICE_ACTIVE or
                         (if (s.pttMode && s.pttPressed) RideComProtocol.FLAG_PTT_ACTIVE else 0)
                     client.sendAudio(encoded, flags)
+                }
+                val nowMs = SystemClock.elapsedRealtime()
+                if (nowMs - perfLastLogMs >= 2000L) {
+                    perfLastLogMs = nowMs
+                    val encAvg = if (perfEncCount > 0) perfEncTotalUs / perfEncCount / 1000.0 else 0.0
+                    val decAvg = if (perfDecCount > 0) perfDecTotalUs / perfDecCount / 1000.0 else 0.0
+                    Log.d("RideComPerf", String.format("enc=%.2fms(%d) dec=%.2fms(%d) loss=%.1f%% buf=%dms", encAvg, perfEncCount, decAvg, perfDecCount, jitterBuffer.packetLossPercent(), jitterBuffer.currentBufferMs()))
+                    perfEncCount = 0; perfEncTotalUs = 0L
+                    perfDecCount = 0; perfDecTotalUs = 0L
                 }
                 uiTickCounter++
                 if (uiTickCounter >= 4) { // ~12.5 Hz UI meter update
@@ -174,7 +193,10 @@ class IntercomService : Service() {
                     is PopResult.Frame -> {
                         consecutivePlc = 0
                         try {
+                            val t0 = System.nanoTime()
                             codec.decode(result.payload, outPcm)
+                            perfDecTotalUs += (System.nanoTime() - t0) / 1000L
+                            perfDecCount++
                         } catch (_: Throwable) {
                             outPcm.fill(0)
                         }

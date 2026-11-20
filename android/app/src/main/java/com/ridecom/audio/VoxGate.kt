@@ -7,8 +7,8 @@ import kotlin.math.sqrt
  * Wind-noise gate (VOX) with hangover timer so word endings are never clipped.
  */
 class VoxGate(
-    @Volatile var thresholdDb: Float = -42f,
-    @Volatile var hangoverMs: Long = 350L
+    @Volatile var thresholdDb: Float = -58f,
+    @Volatile var hangoverMs: Long = 400L
 ) {
     @Volatile
     var lastLevelDb: Float = -90f

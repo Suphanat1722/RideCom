@@ -48,15 +48,171 @@ public sealed record RideComStatus(
     bool VoxOpen
 );
 
+/// <summary>
+/// Sequence-ordered jitter buffer with 60ms pre-buffer and clean talkspurt re-sync.
+/// </summary>
+internal sealed class PcJitterBuffer
+{
+    private const int Capacity = 32;
+    private readonly (int Seq, byte[] Payload)?[] _slots = new (int, byte[])?[Capacity];
+    private readonly object _lock = new();
+
+    private const int TargetFrames = 3; // 60ms smooth buffer for PC WaveOut
+    private bool _initialized;
+    private bool _buffering = true;
+    private int _nextReadSeq;
+    private int _highestSeenSeq;
+    private int _consecutiveMissing;
+
+    public long TotalExpected { get; private set; }
+    public long TotalLost { get; private set; }
+
+    public void Reset()
+    {
+        lock (_lock)
+        {
+            Array.Clear(_slots);
+            _initialized = false;
+            _buffering = true;
+            _nextReadSeq = 0;
+            _highestSeenSeq = 0;
+            _consecutiveMissing = 0;
+            TotalExpected = 0;
+            TotalLost = 0;
+        }
+    }
+
+    public float PacketLossPercent()
+    {
+        lock (_lock)
+        {
+            return TotalExpected > 0 ? (TotalLost * 100f / TotalExpected) : 0f;
+        }
+    }
+
+    public void Push(ushort seq, byte[] payload)
+    {
+        lock (_lock)
+        {
+            int normSeq = seq & 0xFFFF;
+            if (!_initialized)
+            {
+                _initialized = true;
+                _buffering = true;
+                _nextReadSeq = normSeq;
+                _highestSeenSeq = normSeq;
+                _consecutiveMissing = 0;
+            }
+            else
+            {
+                int diff = SeqDiff(normSeq, _nextReadSeq);
+                if (diff < -4 || diff > 25)
+                {
+                    if (diff > 25 || diff < -25)
+                    {
+                        Array.Clear(_slots);
+                        _nextReadSeq = normSeq;
+                        _highestSeenSeq = normSeq;
+                        _buffering = true;
+                        _consecutiveMissing = 0;
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+                if (SeqDiff(normSeq, _highestSeenSeq) > 0)
+                {
+                    _highestSeenSeq = normSeq;
+                }
+            }
+            _slots[normSeq % Capacity] = (normSeq, payload);
+        }
+    }
+
+    /// <summary>
+    /// Returns: 1 = got frame, 0 = missing (use PLC), -1 = buffering/idle (silence).
+    /// </summary>
+    public int Pop(out byte[]? payload)
+    {
+        lock (_lock)
+        {
+            payload = null;
+            if (!_initialized) return -1;
+
+            int depth = SeqDiff(_highestSeenSeq, _nextReadSeq) + 1;
+            if (_buffering)
+            {
+                if (depth >= TargetFrames)
+                {
+                    _buffering = false;
+                    _consecutiveMissing = 0;
+                }
+                else
+                {
+                    return -1;
+                }
+            }
+
+            if (depth > TargetFrames + 5)
+            {
+                int skip = depth - TargetFrames;
+                for (int i = 0; i < skip; i++)
+                {
+                    _slots[(_nextReadSeq + i) % Capacity] = null;
+                }
+                _nextReadSeq = (_nextReadSeq + skip) & 0xFFFF;
+            }
+
+            int idx = _nextReadSeq % Capacity;
+            var slot = _slots[idx];
+            if (slot.HasValue && slot.Value.Seq == _nextReadSeq)
+            {
+                _slots[idx] = null;
+                _nextReadSeq = (_nextReadSeq + 1) & 0xFFFF;
+                _consecutiveMissing = 0;
+                TotalExpected++;
+                payload = slot.Value.Payload;
+                return 1;
+            }
+
+            _consecutiveMissing++;
+            if (_consecutiveMissing >= 4)
+            {
+                Array.Clear(_slots);
+                _initialized = false;
+                _buffering = true;
+                _consecutiveMissing = 0;
+                return -1;
+            }
+
+            TotalExpected++;
+            TotalLost++;
+            _nextReadSeq = (_nextReadSeq + 1) & 0xFFFF;
+            return 0;
+        }
+    }
+
+    private static int SeqDiff(int a, int b)
+    {
+        int d = (a & 0xFFFF) - (b & 0xFFFF);
+        if (d > 32768) d -= 65536;
+        if (d < -32768) d += 65536;
+        return d;
+    }
+}
+
 public sealed class RideComEngine : IDisposable
 {
     private readonly ushort _senderId = (ushort)Random.Shared.Next(1, 65535);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
-    private readonly object _codecLock = new();
+    private readonly object _encodeLock = new();
+    private readonly object _decodeLock = new();
     private readonly object _peerLock = new();
 
     private readonly OpusEncoder _encoder;
     private readonly OpusDecoder _decoder;
+    private readonly PcJitterBuffer _jitterBuffer = new();
 
     private UdpClient? _udp;
     private WaveInEvent? _waveIn;
@@ -70,14 +226,11 @@ public sealed class RideComEngine : IDisposable
     private int _rttMs;
     private ushort _txSeq;
 
-    private int _lastRxSeq = -1;
-    private long _rxExpected;
-    private long _rxLost;
-
     private readonly List<byte> _captureAccum = new(RideComProtocol.FrameBytes * 4);
     private readonly byte[] _opusScratch = new byte[1276];
     private readonly short[] _decodeScratch = new short[RideComProtocol.FrameSamples];
     private readonly byte[] _pcmOutScratch = new byte[RideComProtocol.FrameBytes];
+    private readonly byte[] _silenceFrame = new byte[RideComProtocol.FrameBytes];
 
     private long _lastVoxOpenMs;
     private float _lastInputDb = -90f;
@@ -85,7 +238,7 @@ public sealed class RideComEngine : IDisposable
 
     public volatile bool Active;
     public volatile bool Muted;
-    public volatile float VoxThresholdDb = -45f;
+    public volatile float VoxThresholdDb = -58f;
     public string LocalName { get; set; } = Environment.MachineName;
 
     public event Action<RideComStatus>? StatusUpdated;
@@ -94,10 +247,9 @@ public sealed class RideComEngine : IDisposable
     {
         _encoder = OpusEncoder.Create(RideComProtocol.SampleRate, RideComProtocol.Channels, OpusApplication.OPUS_APPLICATION_VOIP);
         _encoder.Bitrate = 24000;
-        _encoder.Complexity = 5;
+        _encoder.Complexity = 2;
         _encoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
-        _encoder.UseInbandFEC = true;
-        _encoder.PacketLossPercent = 15;
+        _encoder.UseInbandFEC = false;
 
         _decoder = OpusDecoder.Create(RideComProtocol.SampleRate, RideComProtocol.Channels);
     }
@@ -107,9 +259,7 @@ public sealed class RideComEngine : IDisposable
         if (Active) return;
 
         _cts = new CancellationTokenSource();
-        _lastRxSeq = -1;
-        _rxExpected = 0;
-        _rxLost = 0;
+        _jitterBuffer.Reset();
         _lastPeerRxMs = 0;
         _rttMs = 0;
         _peerName = "";
@@ -132,13 +282,14 @@ public sealed class RideComEngine : IDisposable
             _playBuffer = new BufferedWaveProvider(waveFormat)
             {
                 DiscardOnBufferOverflow = true,
-                BufferDuration = TimeSpan.FromMilliseconds(200)
+                BufferDuration = TimeSpan.FromMilliseconds(500)
             };
 
             _waveOut = new WaveOutEvent
             {
                 DeviceNumber = outputDeviceIndex,
-                DesiredLatency = 60
+                DesiredLatency = 80,
+                NumberOfBuffers = 3
             };
             _waveOut.Init(_playBuffer);
             _waveOut.Play();
@@ -160,11 +311,12 @@ public sealed class RideComEngine : IDisposable
 
         var token = _cts.Token;
         Task.Run(() => ReceiveLoop(token), token);
+        Task.Run(() => PlaybackLoop(token), token);
         Task.Run(() => KeepAliveLoop(token), token);
         EmitStatus();
     }
 
-    public void SendTestTone(int durationMs = 800)
+    public void SendTestTone(int durationMs = 1200)
     {
         if (!Active) return;
         Task.Run(async () =>
@@ -172,6 +324,7 @@ public sealed class RideComEngine : IDisposable
             int frames = Math.Max(1, durationMs / RideComProtocol.FrameMs);
             var pcm = new short[RideComProtocol.FrameSamples];
             int sampleIdx = 0;
+            long nextTick = _clock.ElapsedMilliseconds;
             for (int f = 0; f < frames && Active; f++)
             {
                 for (int i = 0; i < RideComProtocol.FrameSamples; i++)
@@ -180,7 +333,7 @@ public sealed class RideComEngine : IDisposable
                     sampleIdx++;
                 }
                 int encodedLen;
-                lock (_codecLock)
+                lock (_encodeLock)
                 {
                     encodedLen = _encoder.Encode(pcm, 0, RideComProtocol.FrameSamples, _opusScratch, 0, _opusScratch.Length);
                 }
@@ -190,7 +343,9 @@ public sealed class RideComEngine : IDisposable
                     Buffer.BlockCopy(_opusScratch, 0, payload, 0, encodedLen);
                     SendPacket(PacketType.Audio, RideComProtocol.FlagVoiceActive, _txSeq++, payload);
                 }
-                await Task.Delay(RideComProtocol.FrameMs);
+                nextTick += RideComProtocol.FrameMs;
+                int wait = (int)(nextTick - _clock.ElapsedMilliseconds);
+                if (wait > 0) await Task.Delay(wait);
             }
         });
     }
@@ -257,7 +412,7 @@ public sealed class RideComEngine : IDisposable
             }
             else
             {
-                gateOpen = (nowMs - _lastVoxOpenMs) <= 350;
+                gateOpen = (nowMs - _lastVoxOpenMs) <= 400;
             }
 
             bool shouldTx = !Muted && gateOpen;
@@ -266,7 +421,7 @@ public sealed class RideComEngine : IDisposable
             if (shouldTx)
             {
                 int encodedLen;
-                lock (_codecLock)
+                lock (_encodeLock)
                 {
                     encodedLen = _encoder.Encode(pcm, 0, RideComProtocol.FrameSamples, _opusScratch, 0, _opusScratch.Length);
                 }
@@ -312,7 +467,12 @@ public sealed class RideComEngine : IDisposable
                 switch (type)
                 {
                     case PacketType.Audio:
-                        HandleAudioPacket(seq, data, RideComProtocol.HeaderSize, payloadLen);
+                        if (payloadLen > 0)
+                        {
+                            var opus = new byte[payloadLen];
+                            Buffer.BlockCopy(data, RideComProtocol.HeaderSize, opus, 0, payloadLen);
+                            _jitterBuffer.Push(seq, opus);
+                        }
                         break;
                     case PacketType.Hello:
                         _peerName = payloadLen > 0 ? Encoding.UTF8.GetString(data, RideComProtocol.HeaderSize, payloadLen) : remote.Address.ToString();
@@ -356,40 +516,70 @@ public sealed class RideComEngine : IDisposable
         }
     }
 
-    private void HandleAudioPacket(ushort seq, byte[] buffer, int offset, int length)
+    private void PlaybackLoop(CancellationToken token)
     {
-        if (_playBuffer == null || length <= 0) return;
+        long nextTickMs = _clock.ElapsedMilliseconds;
+        int consecutivePlc = 0;
 
-        if (_lastRxSeq >= 0)
+        while (!token.IsCancellationRequested && Active)
         {
-            int diff = ((seq - _lastRxSeq) + 65536) % 65536;
-            if (diff > 1 && diff < 20)
+            nextTickMs += RideComProtocol.FrameMs;
+
+            var playBuf = _playBuffer;
+            if (playBuf != null)
             {
-                _rxLost += (diff - 1);
-                _rxExpected += diff;
+                // Keep WaveOut buffer healthy without letting latency creep above 120ms
+                if (playBuf.BufferedBytes > RideComProtocol.FrameBytes * 6)
+                {
+                    playBuf.ClearBuffer();
+                }
+
+                int status = _jitterBuffer.Pop(out var opus);
+                if (status == 1 && opus != null)
+                {
+                    consecutivePlc = 0;
+                    int decoded;
+                    lock (_decodeLock)
+                    {
+                        decoded = _decoder.Decode(opus, 0, opus.Length, _decodeScratch, 0, RideComProtocol.FrameSamples, false);
+                    }
+                    if (decoded > 0)
+                    {
+                        int bytes = decoded * 2;
+                        Buffer.BlockCopy(_decodeScratch, 0, _pcmOutScratch, 0, bytes);
+                        playBuf.AddSamples(_pcmOutScratch, 0, bytes);
+                    }
+                }
+                else if (status == 0 && consecutivePlc < 3)
+                {
+                    consecutivePlc++;
+                    int decoded;
+                    lock (_decodeLock)
+                    {
+                        decoded = _decoder.Decode((byte[]?)null, 0, 0, _decodeScratch, 0, RideComProtocol.FrameSamples, false);
+                    }
+                    if (decoded > 0)
+                    {
+                        int bytes = decoded * 2;
+                        Buffer.BlockCopy(_decodeScratch, 0, _pcmOutScratch, 0, bytes);
+                        playBuf.AddSamples(_pcmOutScratch, 0, bytes);
+                    }
+                }
+                else if (playBuf.BufferedBytes < RideComProtocol.FrameBytes * 2)
+                {
+                    playBuf.AddSamples(_silenceFrame, 0, _silenceFrame.Length);
+                }
             }
-            else
+
+            long sleepMs = nextTickMs - _clock.ElapsedMilliseconds;
+            if (sleepMs > 1)
             {
-                _rxExpected += 1;
+                Thread.Sleep((int)sleepMs);
             }
-        }
-        else
-        {
-            _rxExpected = 1;
-        }
-        _lastRxSeq = seq;
-
-        int decodedSamples;
-        lock (_codecLock)
-        {
-            decodedSamples = _decoder.Decode(buffer, offset, length, _decodeScratch, 0, RideComProtocol.FrameSamples, false);
-        }
-
-        if (decodedSamples > 0)
-        {
-            int bytes = decodedSamples * 2;
-            Buffer.BlockCopy(_decodeScratch, 0, _pcmOutScratch, 0, bytes);
-            _playBuffer.AddSamples(_pcmOutScratch, 0, bytes);
+            else if (sleepMs < -100)
+            {
+                nextTickMs = _clock.ElapsedMilliseconds;
+            }
         }
     }
 
@@ -461,14 +651,13 @@ public sealed class RideComEngine : IDisposable
             alive = Active && _lastPeerRxMs > 0 && (_clock.ElapsedMilliseconds - _lastPeerRxMs) < 3500;
             peerIp = _peerEndpoint?.Address.ToString() ?? "";
         }
-        float loss = _rxExpected > 0 ? (_rxLost * 100f / _rxExpected) : 0f;
         StatusUpdated?.Invoke(new RideComStatus(
             Active: Active,
             PeerConnected: alive,
             PeerName: _peerName,
             PeerIp: peerIp,
             RttMs: alive ? _rttMs : 0,
-            PacketLossPct: loss,
+            PacketLossPct: _jitterBuffer.PacketLossPercent(),
             InputLevelDb: _lastInputDb,
             VoxOpen: _lastVoxOpen
         ));

@@ -44,6 +44,7 @@ final class JitterBuffer {
     private var nextReadSeq = 0
     private var highestSeenSeq = 0
     private var stableReads = 0
+    private var consecutiveMissing = 0
 
     private(set) var totalExpected: Int64 = 0
     private(set) var totalLost: Int64 = 0
@@ -64,6 +65,7 @@ final class JitterBuffer {
         nextReadSeq = 0
         highestSeenSeq = 0
         stableReads = 0
+        consecutiveMissing = 0
         totalExpected = 0
         totalLost = 0
     }
@@ -91,6 +93,7 @@ final class JitterBuffer {
             buffering = true
             nextReadSeq = normSeq
             highestSeenSeq = normSeq
+            consecutiveMissing = 0
         } else {
             let diffFromRead = seqDiff(normSeq, nextReadSeq)
             if diffFromRead < -4 || diffFromRead > 25 {
@@ -99,6 +102,7 @@ final class JitterBuffer {
                     nextReadSeq = normSeq
                     highestSeenSeq = normSeq
                     buffering = true
+                    consecutiveMissing = 0
                 } else {
                     return
                 }
@@ -120,12 +124,13 @@ final class JitterBuffer {
         if buffering {
             if bufferedDepth >= currentTargetFrames {
                 buffering = false
+                consecutiveMissing = 0
             } else {
                 return .buffering
             }
         }
 
-        let maxAllowedDepth = min(currentTargetFrames + 3, 10)
+        let maxAllowedDepth = min(currentTargetFrames + 4, 12)
         if bufferedDepth > maxAllowedDepth {
             let skip = bufferedDepth - currentTargetFrames
             for i in 0..<skip {
@@ -134,11 +139,12 @@ final class JitterBuffer {
             nextReadSeq = (nextReadSeq + skip) & 0xFFFF
         }
 
-        totalExpected += 1
         let idx = nextReadSeq % capacity
         if let slot = slots[idx], slot.seq == nextReadSeq {
             slots[idx] = nil
             nextReadSeq = (nextReadSeq + 1) & 0xFFFF
+            consecutiveMissing = 0
+            totalExpected += 1
             if preset.isAdaptive {
                 stableReads += 1
                 if stableReads >= 150 && currentTargetFrames > 1 {
@@ -149,6 +155,16 @@ final class JitterBuffer {
             return .frame(slot.payload, slot.flags)
         }
 
+        consecutiveMissing += 1
+        if consecutiveMissing >= 4 {
+            slots = Array(repeating: nil, count: capacity)
+            initialized = false
+            buffering = true
+            consecutiveMissing = 0
+            return .buffering
+        }
+
+        totalExpected += 1
         totalLost += 1
         stableReads = 0
         if preset.isAdaptive && currentTargetFrames < 5 {
