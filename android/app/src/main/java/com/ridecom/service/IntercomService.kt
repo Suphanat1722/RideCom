@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -21,6 +22,7 @@ import com.ridecom.audio.AudioEngine
 import com.ridecom.audio.AudioRoute
 import com.ridecom.audio.CueTone
 import com.ridecom.audio.MusicSharer
+import com.ridecom.audio.SystemAudioSharer
 import com.ridecom.audio.VoxGate
 import com.ridecom.codec.OpusCodec
 import com.ridecom.data.RideComPrefs
@@ -59,7 +61,8 @@ data class IntercomState(
     val musicLoaded: Boolean = false,
     val musicPlaying: Boolean = false,
     val musicTrackTitle: String = "",
-    val musicVolume: Float = 0.35f
+    val musicVolume: Float = 0.35f,
+    val appAudioSharing: Boolean = false
 )
 
 class IntercomService : Service() {
@@ -76,6 +79,7 @@ class IntercomService : Service() {
     private val jitterBuffer = JitterBuffer(JitterPreset.BALANCED)
     private val voxGate = VoxGate()
     private val cueMixer = AudioCueMixer()
+    private val systemAudioSharer = SystemAudioSharer()
     private val localMusicQueue = ArrayBlockingQueue<ShortArray>(8)
 
     private var consecutivePlc = 0
@@ -226,23 +230,25 @@ class IntercomService : Service() {
 
                 val nowMs = SystemClock.elapsedRealtime()
                 val peerSpeaking = (nowMs - lastRemoteAudioMs) < 450L
-                val musicFrame = musicSharer.nextFrame(voiceActive = shouldTxVoice || peerSpeaking)
+                val anyVoice = shouldTxVoice || peerSpeaking
+
+                val musicFrame = musicSharer.nextFrame(voiceActive = anyVoice)
                 if (musicFrame != null) {
                     if (!localMusicQueue.offer(musicFrame)) {
                         localMusicQueue.poll()
                         localMusicQueue.offer(musicFrame)
                     }
                 }
+                val sysAudioFrame = systemAudioSharer.nextFrame(voiceActive = anyVoice)
 
-                val txPcm: ShortArray? = when {
-                    shouldTxVoice && musicFrame != null -> {
-                        val mixed = pcm.copyOf()
-                        MusicSharer.mixInto(mixed, musicFrame)
-                        mixed
-                    }
-                    shouldTxVoice -> pcm
-                    musicFrame != null -> musicFrame
-                    else -> null
+                var txPcm: ShortArray? = if (shouldTxVoice) pcm.copyOf() else null
+                if (musicFrame != null) {
+                    if (txPcm == null) txPcm = musicFrame.copyOf()
+                    else MusicSharer.mixInto(txPcm, musicFrame)
+                }
+                if (sysAudioFrame != null) {
+                    if (txPcm == null) txPcm = sysAudioFrame
+                    else MusicSharer.mixInto(txPcm, sysAudioFrame)
                 }
 
                 if (txPcm != null) {
@@ -364,6 +370,7 @@ class IntercomService : Service() {
     }
 
     private fun stopIntercom() {
+        systemAudioSharer.stop()
         musicSharer.stop()
         localMusicQueue.clear()
         cueMixer.clear()
@@ -382,7 +389,8 @@ class IntercomService : Service() {
                 packetLossPct = 0f,
                 musicLoaded = false,
                 musicPlaying = false,
-                musicTrackTitle = ""
+                musicTrackTitle = "",
+                appAudioSharing = false
             )
         }
     }
@@ -452,8 +460,48 @@ class IntercomService : Service() {
     fun setMusicVolume(vol: Float) {
         val clamped = vol.coerceIn(0f, 0.85f)
         musicSharer.volume = clamped
+        systemAudioSharer.volume = clamped
         prefs.musicVolume = clamped
         _state.update { it.copy(musicVolume = clamped) }
+    }
+
+    fun startAppAudioShare(resultCode: Int, data: Intent): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        return try {
+            val statusLabel = if (_state.value.peerConnected) {
+                "Connected: ${_state.value.peerName} (Sharing App Audio)"
+            } else {
+                "Sharing App Audio..."
+            }
+            startForeground(
+                NOTIF_ID,
+                buildNotification(statusLabel),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val projection = mpm.getMediaProjection(resultCode, data) ?: return false
+            systemAudioSharer.volume = _state.value.musicVolume
+            val ok = systemAudioSharer.start(projection)
+            _state.update { it.copy(appAudioSharing = ok) }
+            ok
+        } catch (_: Throwable) {
+            stopAppAudioShare()
+            false
+        }
+    }
+
+    fun stopAppAudioShare() {
+        systemAudioSharer.stop()
+        _state.update { it.copy(appAudioSharing = false) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && _state.value.active) {
+            try {
+                startForeground(
+                    NOTIF_ID,
+                    buildNotification(if (_state.value.peerConnected) "Connected: ${_state.value.peerName}" else "Waiting for rider..."),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } catch (_: Throwable) {}
+        }
     }
 
     fun toggleAudioRoute() {

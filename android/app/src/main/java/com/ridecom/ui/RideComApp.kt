@@ -1,5 +1,9 @@
 package com.ridecom.ui
 
+import android.app.Activity
+import android.content.Context
+import android.media.projection.MediaProjectionManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -121,6 +125,15 @@ fun RideComApp(
         }
     }
 
+    val appAudioLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            IntercomService.instance?.startAppAudioShare(result.resultCode, data)
+        }
+    }
+
     Scaffold(containerColor = BgCanvas) { padding ->
         Box(
             modifier = Modifier
@@ -143,6 +156,14 @@ fun RideComApp(
                 state.active -> ActiveCallScreen(
                     state = state,
                     onPickMusic = { musicPicker.launch(arrayOf("audio/*")) },
+                    onToggleAppAudio = {
+                        if (state.appAudioSharing) {
+                            IntercomService.instance?.stopAppAudioShare()
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val mpm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                            appAudioLauncher.launch(mpm.createScreenCaptureIntent())
+                        }
+                    },
                     onOpenSettings = { showSettings = true },
                     onDisconnect = { IntercomService.stop(context) }
                 )
@@ -215,7 +236,7 @@ private fun LobbyScreen(
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text("RideCom", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                    Text("v1.0 • Native Opus Intercom", fontSize = 12.sp, color = AccentCyan)
+                    Text("v1.1 • Native Opus Intercom", fontSize = 12.sp, color = AccentCyan)
                 }
             }
             Row {
@@ -468,6 +489,7 @@ private fun LobbyScreen(
 private fun ActiveCallScreen(
     state: IntercomState,
     onPickMusic: () -> Unit,
+    onToggleAppAudio: () -> Unit,
     onOpenSettings: () -> Unit,
     onDisconnect: () -> Unit
 ) {
@@ -678,10 +700,11 @@ private fun ActiveCallScreen(
             }
         }
 
-        // RideDJ Shared Music Card (with Auto Voice Ducking)
+        // RideDJ Shared Music & App Audio Card (with Auto Voice Ducking)
+        val sharingAnyAudio = state.musicPlaying || state.appAudioSharing
         Card(
             colors = CardDefaults.cardColors(containerColor = CardBg),
-            border = BorderStroke(1.dp, if (state.musicPlaying) AccentCyan.copy(alpha = 0.5f) else CardBorder),
+            border = BorderStroke(1.dp, if (sharingAnyAudio) AccentCyan.copy(alpha = 0.55f) else CardBorder),
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -696,7 +719,11 @@ private fun ActiveCallScreen(
                         Spacer(Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = if (state.musicLoaded) state.musicTrackTitle else "Share Music (RideDJ)",
+                                text = when {
+                                    state.appAudioSharing -> "Sharing App Audio (Live)"
+                                    state.musicLoaded -> state.musicTrackTitle
+                                    else -> "Share Audio (RideDJ)"
+                                },
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
@@ -704,22 +731,18 @@ private fun ActiveCallScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = if (state.musicLoaded) "Auto-ducks when riding partners talk" else "Pick MP3/M4A to listen together",
+                                text = when {
+                                    state.appAudioSharing -> "YouTube / Web / Apps • Auto-ducks on voice"
+                                    state.musicLoaded -> "Auto-ducks when riding partners talk"
+                                    else -> "Share YouTube/Web audio or local MP3"
+                                },
                                 color = TextSecondary,
                                 fontSize = 11.sp
                             )
                         }
                     }
 
-                    if (!state.musicLoaded) {
-                        OutlinedButton(
-                            onClick = onPickMusic,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, AccentCyan)
-                        ) {
-                            Text("Pick Song", color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    } else {
+                    if (state.musicLoaded) {
                         Row {
                             IconButton(onClick = { IntercomService.instance?.toggleMusicPlayPause() }) {
                                 Icon(
@@ -735,14 +758,45 @@ private fun ActiveCallScreen(
                     }
                 }
 
-                if (state.musicLoaded) {
+                if (!state.musicLoaded) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = onToggleAppAudio,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (state.appAudioSharing) AccentRed else AccentCyan,
+                                contentColor = if (state.appAudioSharing) Color.White else Color.Black
+                            ),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                if (state.appAudioSharing) "Stop App Audio" else "Share App Audio",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onPickMusic,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AccentCyan),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Pick MP3/M4A", color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                if (state.musicLoaded || state.appAudioSharing) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Vol ${(state.musicVolume * 100).toInt()}%", color = TextSecondary, fontSize = 11.sp)
                         Spacer(Modifier.width(8.dp))
                         Slider(
                             value = state.musicVolume,
                             onValueChange = { IntercomService.instance?.setMusicVolume(it) },
-                            valueRange = 0.05f..0.80f,
+                            valueRange = 0.05f..0.85f,
                             colors = SliderDefaults.colors(thumbColor = AccentCyan, activeTrackColor = AccentCyan),
                             modifier = Modifier.weight(1f)
                         )
