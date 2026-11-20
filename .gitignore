@@ -22,6 +22,11 @@ ios/DerivedData/
 venv/
 __pycache__/
 
+# PC (.NET)
+pc/bin/
+pc/obj/
+pc/publish/
+
 # OS / Editor
 .DS_Store
 Thumbs.db

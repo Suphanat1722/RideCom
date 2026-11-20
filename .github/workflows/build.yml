@@ -81,3 +81,28 @@ jobs:
           name: RideCom-iOS-Unsigned-IPA
           path: ios/build/RideCom-unsigned.ipa
           if-no-files-found: error
+
+  build-pc:
+    name: Build Windows PC Tester (.exe)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Single-File RideComPC.exe
+        run: dotnet publish RideComPC.csproj -c Release -o publish
+
+      - name: Upload Windows PC Executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideCom-Windows-PC
+          path: pc/publish/RideComPC.exe
+          if-no-files-found: error
