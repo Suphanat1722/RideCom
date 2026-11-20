@@ -16,7 +16,7 @@ import kotlin.random.Random
 
 class UdpIntercomClient(
     private val localName: String,
-    private val localPort: Int = RideComProtocol.DEFAULT_PORT
+    private val bindPort: Int = RideComProtocol.DEFAULT_PORT
 ) {
     private val senderId: Int = Random.nextInt(1, 65535)
     private val txSequence = AtomicInteger(0)
@@ -31,7 +31,7 @@ class UdpIntercomClient(
         private set
 
     @Volatile
-    var peerPort: Int = localPort
+    var peerPort: Int = bindPort
         private set
 
     @Volatile
@@ -48,18 +48,17 @@ class UdpIntercomClient(
 
     fun start(
         targetHost: String?,
-        targetPort: Int = localPort,
+        targetPort: Int = bindPort,
         onAudioPacket: (RideComPacket) -> Unit,
         onPeerUpdate: (connected: Boolean, name: String, ip: String, rttMs: Int) -> Unit
     ) {
         if (!running.compareAndSet(false, true)) return
 
-        val sock = DatagramSocket(null).apply {
-            reuseAddress = true
-            soTimeout = 500
-            trafficClass = 0xB8 // DSCP EF (Expedited Forwarding for VoIP)
-            bind(InetSocketAddress(localPort))
-        }
+        val sock = DatagramSocket(null)
+        sock.reuseAddress = true
+        sock.soTimeout = 500
+        sock.trafficClass = 0xB8 // DSCP EF (Expedited Forwarding for VoIP)
+        sock.bind(InetSocketAddress(this.bindPort))
         socket = sock
         peerPort = targetPort
 
