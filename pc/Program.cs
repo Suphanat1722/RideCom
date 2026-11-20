@@ -22,6 +22,7 @@ public sealed class MainForm : Form
     private readonly TextBox _peerIpBox = new();
     private readonly Button _connectBtn = new();
     private readonly Button _muteBtn = new();
+    private readonly Button _beepBtn = new();
     private readonly Label _statusLabel = new();
     private readonly Label _statsLabel = new();
     private readonly ProgressBar _levelBar = new();
@@ -31,7 +32,7 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Text = "RideCom PC — Offline Intercom Tester";
-        ClientSize = new Size(440, 490);
+        ClientSize = new Size(440, 535);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -65,11 +66,7 @@ public sealed class MainForm : Form
         _micBox.Location = new Point(20, y);
         _micBox.Size = new Size(400, 28);
         _micBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        for (int i = 0; i < WaveInEvent.DeviceCount; i++)
-        {
-            _micBox.Items.Add(WaveInEvent.GetCapabilities(i).ProductName);
-        }
-        if (_micBox.Items.Count > 0) _micBox.SelectedIndex = 0;
+        PopulateDevices();
         Controls.Add(_micBox);
         y += 36;
 
@@ -78,11 +75,6 @@ public sealed class MainForm : Form
         _spkBox.Location = new Point(20, y);
         _spkBox.Size = new Size(400, 28);
         _spkBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        for (int i = 0; i < WaveOut.DeviceCount; i++)
-        {
-            _spkBox.Items.Add(WaveOut.GetCapabilities(i).ProductName);
-        }
-        if (_spkBox.Items.Count > 0) _spkBox.SelectedIndex = 0;
         Controls.Add(_spkBox);
         y += 38;
 
@@ -113,7 +105,18 @@ public sealed class MainForm : Form
         _muteBtn.Enabled = false;
         _muteBtn.Click += OnMuteClick;
         Controls.Add(_muteBtn);
-        y += 56;
+        y += 52;
+
+        _beepBtn.Text = "Send Test Beep (440 Hz) to Android";
+        _beepBtn.Location = new Point(20, y);
+        _beepBtn.Size = new Size(400, 34);
+        _beepBtn.BackColor = Color.FromArgb(30, 64, 110);
+        _beepBtn.ForeColor = Color.White;
+        _beepBtn.FlatStyle = FlatStyle.Flat;
+        _beepBtn.Enabled = false;
+        _beepBtn.Click += (_, _) => _engine.SendTestTone();
+        Controls.Add(_beepBtn);
+        y += 44;
 
         _statusLabel.Text = "Status: Idle";
         _statusLabel.Location = new Point(20, y);
@@ -168,6 +171,37 @@ public sealed class MainForm : Form
         ForeColor = Color.LightGray
     };
 
+    private void PopulateDevices()
+    {
+        _micBox.Items.Clear();
+        if (WaveInEvent.DeviceCount == 0)
+        {
+            _micBox.Items.Add("(No Microphone — Listen Only)");
+        }
+        else
+        {
+            for (int i = 0; i < WaveInEvent.DeviceCount; i++)
+            {
+                _micBox.Items.Add(WaveInEvent.GetCapabilities(i).ProductName);
+            }
+        }
+        _micBox.SelectedIndex = 0;
+
+        _spkBox.Items.Clear();
+        if (WaveOut.DeviceCount == 0)
+        {
+            _spkBox.Items.Add("(No Speaker Detected)");
+        }
+        else
+        {
+            for (int i = 0; i < WaveOut.DeviceCount; i++)
+            {
+                _spkBox.Items.Add(WaveOut.GetCapabilities(i).ProductName);
+            }
+        }
+        _spkBox.SelectedIndex = 0;
+    }
+
     private void OnConnectClick(object? sender, EventArgs e)
     {
         if (_engine.Active)
@@ -176,17 +210,19 @@ public sealed class MainForm : Form
             _connectBtn.Text = "Start Intercom";
             _connectBtn.BackColor = Color.FromArgb(0, 200, 100);
             _muteBtn.Enabled = false;
+            _beepBtn.Enabled = false;
             return;
         }
 
         try
         {
-            int micIdx = Math.Max(0, _micBox.SelectedIndex);
-            int spkIdx = Math.Max(0, _spkBox.SelectedIndex);
+            int micIdx = WaveInEvent.DeviceCount > 0 ? Math.Max(0, _micBox.SelectedIndex) : -1;
+            int spkIdx = WaveOut.DeviceCount > 0 ? Math.Max(0, _spkBox.SelectedIndex) : -1;
             _engine.Start(_peerIpBox.Text, micIdx, spkIdx);
             _connectBtn.Text = "Stop Intercom";
             _connectBtn.BackColor = Color.IndianRed;
-            _muteBtn.Enabled = true;
+            _muteBtn.Enabled = micIdx >= 0;
+            _beepBtn.Enabled = true;
         }
         catch (Exception ex)
         {

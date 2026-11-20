@@ -127,28 +127,34 @@ public sealed class RideComEngine : IDisposable
         _udp.Client.Bind(new IPEndPoint(IPAddress.Any, RideComProtocol.DefaultPort));
 
         var waveFormat = new WaveFormat(RideComProtocol.SampleRate, 16, RideComProtocol.Channels);
-        _playBuffer = new BufferedWaveProvider(waveFormat)
+        if (outputDeviceIndex >= 0 && outputDeviceIndex < WaveOut.DeviceCount)
         {
-            DiscardOnBufferOverflow = true,
-            BufferDuration = TimeSpan.FromMilliseconds(200)
-        };
+            _playBuffer = new BufferedWaveProvider(waveFormat)
+            {
+                DiscardOnBufferOverflow = true,
+                BufferDuration = TimeSpan.FromMilliseconds(200)
+            };
 
-        _waveOut = new WaveOutEvent
-        {
-            DeviceNumber = outputDeviceIndex,
-            DesiredLatency = 60
-        };
-        _waveOut.Init(_playBuffer);
-        _waveOut.Play();
+            _waveOut = new WaveOutEvent
+            {
+                DeviceNumber = outputDeviceIndex,
+                DesiredLatency = 60
+            };
+            _waveOut.Init(_playBuffer);
+            _waveOut.Play();
+        }
 
-        _waveIn = new WaveInEvent
+        if (inputDeviceIndex >= 0 && inputDeviceIndex < WaveInEvent.DeviceCount)
         {
-            DeviceNumber = inputDeviceIndex,
-            WaveFormat = waveFormat,
-            BufferMilliseconds = RideComProtocol.FrameMs
-        };
-        _waveIn.DataAvailable += OnMicData;
-        _waveIn.StartRecording();
+            _waveIn = new WaveInEvent
+            {
+                DeviceNumber = inputDeviceIndex,
+                WaveFormat = waveFormat,
+                BufferMilliseconds = RideComProtocol.FrameMs
+            };
+            _waveIn.DataAvailable += OnMicData;
+            _waveIn.StartRecording();
+        }
 
         Active = true;
 
@@ -156,6 +162,37 @@ public sealed class RideComEngine : IDisposable
         Task.Run(() => ReceiveLoop(token), token);
         Task.Run(() => KeepAliveLoop(token), token);
         EmitStatus();
+    }
+
+    public void SendTestTone(int durationMs = 800)
+    {
+        if (!Active) return;
+        Task.Run(async () =>
+        {
+            int frames = Math.Max(1, durationMs / RideComProtocol.FrameMs);
+            var pcm = new short[RideComProtocol.FrameSamples];
+            int sampleIdx = 0;
+            for (int f = 0; f < frames && Active; f++)
+            {
+                for (int i = 0; i < RideComProtocol.FrameSamples; i++)
+                {
+                    pcm[i] = (short)(Math.Sin(2.0 * Math.PI * 440.0 * sampleIdx / RideComProtocol.SampleRate) * 10000.0);
+                    sampleIdx++;
+                }
+                int encodedLen;
+                lock (_codecLock)
+                {
+                    encodedLen = _encoder.Encode(pcm, 0, RideComProtocol.FrameSamples, _opusScratch, 0, _opusScratch.Length);
+                }
+                if (encodedLen > 0)
+                {
+                    var payload = new byte[encodedLen];
+                    Buffer.BlockCopy(_opusScratch, 0, payload, 0, encodedLen);
+                    SendPacket(PacketType.Audio, RideComProtocol.FlagVoiceActive, _txSeq++, payload);
+                }
+                await Task.Delay(RideComProtocol.FrameMs);
+            }
+        });
     }
 
     public void Stop()
