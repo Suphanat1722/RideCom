@@ -15,6 +15,8 @@ import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.Process
 import com.ridecom.protocol.RideComProtocol
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 enum class AudioRoute(val label: String) {
@@ -35,7 +37,9 @@ class AudioEngine(private val context: Context) {
     private var agc: AutomaticGainControl? = null
 
     private var captureThread: Thread? = null
+    private var txWorkerThread: Thread? = null
     private var playbackThread: Thread? = null
+    private val txQueue = ArrayBlockingQueue<ShortArray>(8)
 
     @Volatile
     var currentRoute: AudioRoute = AudioRoute.SPEAKER
@@ -110,6 +114,7 @@ class AudioEngine(private val context: Context) {
 
         record.startRecording()
         track.play()
+        txQueue.clear()
 
         captureThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -117,10 +122,22 @@ class AudioEngine(private val context: Context) {
             while (running.get()) {
                 val read = record.read(pcm, 0, pcm.size, AudioRecord.READ_BLOCKING)
                 if (read == pcm.size) {
-                    onCaptureFrame(pcm)
+                    val copy = pcm.copyOf()
+                    if (!txQueue.offer(copy)) {
+                        txQueue.poll()
+                        txQueue.offer(copy)
+                    }
                 }
             }
         }, "RideCom-AudioCapture").apply { start() }
+
+        txWorkerThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            while (running.get()) {
+                val frame = txQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                onCaptureFrame(frame)
+            }
+        }, "RideCom-TxWorker").apply { start() }
 
         playbackThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -202,9 +219,12 @@ class AudioEngine(private val context: Context) {
         try { audioTrack?.stop() } catch (_: Throwable) {}
 
         captureThread?.join(400)
+        txWorkerThread?.join(400)
         playbackThread?.join(400)
         captureThread = null
+        txWorkerThread = null
         playbackThread = null
+        txQueue.clear()
 
         aec?.release(); aec = null
         ns?.release(); ns = null

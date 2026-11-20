@@ -158,10 +158,47 @@ public sealed class MainForm : Form
             _voxLabel.Text = $"Wind Gate (VOX): {_voxSlider.Value} dB";
         };
         Controls.Add(_voxSlider);
+        y += 44;
+
+        Controls.Add(MakeLabel("PC Jitter Buffer (higher = smoother):", 20, y));
+        y += 22;
+        _bufBox.Location = new Point(20, y);
+        _bufBox.Size = new Size(190, 28);
+        _bufBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _bufBox.Items.AddRange(new object[] { "40 ms (Fast)", "60 ms (Balanced)", "100 ms (Ultra Smooth)" });
+        _bufBox.SelectedIndex = 1;
+        _bufBox.SelectedIndexChanged += (_, _) => _engine.SetBufferFrames(SelectedBufferFrames());
+        Controls.Add(_bufBox);
+
+        _volLabel.Text = "Speaker Vol: 70%";
+        _volLabel.Location = new Point(225, y - 22);
+        _volLabel.Size = new Size(195, 20);
+        _volLabel.ForeColor = Color.LightGray;
+        Controls.Add(_volLabel);
+
+        _volSlider.Location = new Point(220, y - 4);
+        _volSlider.Size = new Size(200, 38);
+        _volSlider.Minimum = 0;
+        _volSlider.Maximum = 100;
+        _volSlider.Value = 70;
+        _volSlider.TickFrequency = 25;
+        _volSlider.ValueChanged += (_, _) =>
+        {
+            _volLabel.Text = $"Speaker Vol: {_volSlider.Value}%";
+            _engine.SetOutputVolume(_volSlider.Value / 100f);
+        };
+        Controls.Add(_volSlider);
 
         _engine.StatusUpdated += OnStatusUpdated;
         FormClosing += (_, _) => _engine.Dispose();
     }
+
+    private int SelectedBufferFrames() => _bufBox.SelectedIndex switch
+    {
+        0 => 2,
+        2 => 5,
+        _ => 3
+    };
 
     private static Label MakeLabel(string text, int x, int y) => new()
     {
@@ -218,7 +255,7 @@ public sealed class MainForm : Form
         {
             int micIdx = WaveInEvent.DeviceCount > 0 ? Math.Max(0, _micBox.SelectedIndex) : -1;
             int spkIdx = WaveOut.DeviceCount > 0 ? Math.Max(0, _spkBox.SelectedIndex) : -1;
-            _engine.Start(_peerIpBox.Text, micIdx, spkIdx);
+            _engine.Start(_peerIpBox.Text, micIdx, spkIdx, SelectedBufferFrames(), _volSlider.Value / 100f);
             _connectBtn.Text = "Stop Intercom";
             _connectBtn.BackColor = Color.IndianRed;
             _muteBtn.Enabled = micIdx >= 0;
@@ -263,7 +300,7 @@ public sealed class MainForm : Form
                 _statusLabel.ForeColor = Color.Gold;
             }
 
-            _statsLabel.Text = $"RTT: {s.RttMs} ms  |  Loss: {s.PacketLossPct:F1}%  |  Mic: {(s.VoxOpen ? "LIVE" : "Quiet")} ({s.InputLevelDb:F0} dB)";
+            _statsLabel.Text = $"RTT: {s.RttMs} ms  |  Loss: {s.PacketLossPct:F1}%  |  Buf: {s.BufferDepthMs} ms";
             int norm = (int)Math.Clamp((s.InputLevelDb + 70f) / 70f * 100f, 0f, 100f);
             _levelBar.Value = norm;
         });

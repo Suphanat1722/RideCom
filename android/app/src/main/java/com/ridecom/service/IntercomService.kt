@@ -164,9 +164,11 @@ class IntercomService : Service() {
                     val encoded = codec.encode(pcm)
                     perfEncTotalUs += (System.nanoTime() - t0) / 1000L
                     perfEncCount++
-                    val flags = RideComProtocol.FLAG_VOICE_ACTIVE or
-                        (if (s.pttMode && s.pttPressed) RideComProtocol.FLAG_PTT_ACTIVE else 0)
-                    client.sendAudio(encoded, flags)
+                    if (encoded.isNotEmpty()) {
+                        val flags = RideComProtocol.FLAG_VOICE_ACTIVE or
+                            (if (s.pttMode && s.pttPressed) RideComProtocol.FLAG_PTT_ACTIVE else 0)
+                        client.sendAudio(encoded, flags)
+                    }
                 }
                 val nowMs = SystemClock.elapsedRealtime()
                 if (nowMs - perfLastLogMs >= 2000L) {
@@ -243,7 +245,7 @@ class IntercomService : Service() {
     private fun stopIntercom() {
         audioEngine?.stop(); audioEngine = null
         udpClient?.stop(); udpClient = null
-        opusCodec = null
+        opusCodec?.release(); opusCodec = null
         jitterBuffer.reset()
         releaseLocks()
         _state.update {

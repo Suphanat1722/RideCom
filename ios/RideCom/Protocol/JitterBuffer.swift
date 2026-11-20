@@ -130,13 +130,10 @@ final class JitterBuffer {
             }
         }
 
-        let maxAllowedDepth = min(currentTargetFrames + 4, 12)
+        let maxAllowedDepth = min(currentTargetFrames + 6, 14)
         if bufferedDepth > maxAllowedDepth {
-            let skip = bufferedDepth - currentTargetFrames
-            for i in 0..<skip {
-                slots[(nextReadSeq + i) % capacity] = nil
-            }
-            nextReadSeq = (nextReadSeq + skip) & 0xFFFF
+            slots[nextReadSeq % capacity] = nil
+            nextReadSeq = (nextReadSeq + 1) & 0xFFFF
         }
 
         let idx = nextReadSeq % capacity
@@ -156,7 +153,7 @@ final class JitterBuffer {
         }
 
         consecutiveMissing += 1
-        if consecutiveMissing >= 4 {
+        if consecutiveMissing >= 6 {
             slots = Array(repeating: nil, count: capacity)
             initialized = false
             buffering = true

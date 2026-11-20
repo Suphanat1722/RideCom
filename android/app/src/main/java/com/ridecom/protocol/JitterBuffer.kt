@@ -109,14 +109,11 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
             }
         }
 
-        // Catch up if buffer grows too large (prevents creeping latency)
-        val maxAllowedDepth = (currentTargetFrames + 4).coerceAtMost(12)
+        // Gentle catch-up: skip only 1 frame at a time if buffer grows too deep
+        val maxAllowedDepth = (currentTargetFrames + 6).coerceAtMost(14)
         if (bufferedDepth > maxAllowedDepth) {
-            val skip = bufferedDepth - currentTargetFrames
-            for (i in 0 until skip) {
-                slots[(nextReadSeq + i) % capacity] = null
-            }
-            nextReadSeq = (nextReadSeq + skip) and 0xFFFF
+            slots[nextReadSeq % capacity] = null
+            nextReadSeq = (nextReadSeq + 1) and 0xFFFF
         }
 
         val idx = nextReadSeq % capacity
@@ -137,9 +134,9 @@ class JitterBuffer(preset: JitterPreset = JitterPreset.BALANCED) {
         }
 
         consecutiveMissing++
-        // If 4+ consecutive frames are absent (80ms+), treat as talkspurt end / VOX silence.
+        // If 6+ consecutive frames are absent (120ms+), treat as talkspurt end / VOX silence.
         // Re-arm cleanly so the next talkspurt syncs immediately without dropping packets!
-        if (consecutiveMissing >= 4) {
+        if (consecutiveMissing >= 6) {
             slots.fill(null)
             initialized = false
             buffering = true
