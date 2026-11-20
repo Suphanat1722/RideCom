@@ -16,7 +16,7 @@ import kotlin.random.Random
 
 class UdpIntercomClient(
     private val localName: String,
-    private val port: Int = RideComProtocol.DEFAULT_PORT
+    private val localPort: Int = RideComProtocol.DEFAULT_PORT
 ) {
     private val senderId: Int = Random.nextInt(1, 65535)
     private val txSequence = AtomicInteger(0)
@@ -31,7 +31,7 @@ class UdpIntercomClient(
         private set
 
     @Volatile
-    var peerPort: Int = port
+    var peerPort: Int = localPort
         private set
 
     @Volatile
@@ -48,7 +48,7 @@ class UdpIntercomClient(
 
     fun start(
         targetHost: String?,
-        targetPort: Int = port,
+        targetPort: Int = localPort,
         onAudioPacket: (RideComPacket) -> Unit,
         onPeerUpdate: (connected: Boolean, name: String, ip: String, rttMs: Int) -> Unit
     ) {
@@ -58,16 +58,10 @@ class UdpIntercomClient(
             reuseAddress = true
             soTimeout = 500
             trafficClass = 0xB8 // DSCP EF (Expedited Forwarding for VoIP)
-            bind(InetSocketAddress(port))
+            bind(InetSocketAddress(localPort))
         }
         socket = sock
-
-        if (!targetHost.isNullOrBlank()) {
-            try {
-                peerAddress = InetAddress.getByName(targetHost)
-                peerPort = targetPort
-            } catch (_: Throwable) {}
-        }
+        peerPort = targetPort
 
         rxThread = Thread({
             val buf = ByteArray(1500)
@@ -124,6 +118,11 @@ class UdpIntercomClient(
         }, "RideCom-UdpRx").apply { start() }
 
         keepAliveThread = Thread({
+            if (!targetHost.isNullOrBlank()) {
+                try {
+                    peerAddress = InetAddress.getByName(targetHost.trim())
+                } catch (_: Throwable) {}
+            }
             while (running.get()) {
                 val target = peerAddress
                 if (target != null) {
@@ -176,12 +175,26 @@ class UdpIntercomClient(
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
-        sendControl(PacketType.BYE, ByteArray(0))
-        try { socket?.close() } catch (_: Throwable) {}
+        val sockToClose = socket
+        val target = peerAddress
+        val targetPort = peerPort
+        socket = null
         keepAliveThread?.interrupt()
+        Thread({
+            if (sockToClose != null && target != null) {
+                try {
+                    val bye = RideComPacket(
+                        type = PacketType.BYE,
+                        senderId = senderId,
+                        timestampMs = SystemClock.elapsedRealtime()
+                    ).encode()
+                    sockToClose.send(DatagramPacket(bye, bye.size, target, targetPort))
+                } catch (_: Throwable) {}
+            }
+            try { sockToClose?.close() } catch (_: Throwable) {}
+        }, "RideCom-UdpClose").start()
         rxThread?.join(400)
         keepAliveThread?.join(400)
-        socket = null
         rxThread = null
         keepAliveThread = null
     }
