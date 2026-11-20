@@ -236,7 +236,7 @@ private fun LobbyScreen(
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text("RideCom", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                    Text("v1.1 • Native Opus Intercom", fontSize = 12.sp, color = AccentCyan)
+                    Text("v1.1.1 • Native Opus Intercom", fontSize = 12.sp, color = AccentCyan)
                 }
             }
             Row {

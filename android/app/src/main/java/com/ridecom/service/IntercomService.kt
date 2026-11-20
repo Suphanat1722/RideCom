@@ -69,6 +69,7 @@ class IntercomService : Service() {
 
     private lateinit var prefs: RideComPrefs
     private lateinit var musicSharer: MusicSharer
+    private lateinit var systemAudioSharer: SystemAudioSharer
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -79,7 +80,6 @@ class IntercomService : Service() {
     private val jitterBuffer = JitterBuffer(JitterPreset.BALANCED)
     private val voxGate = VoxGate()
     private val cueMixer = AudioCueMixer()
-    private val systemAudioSharer = SystemAudioSharer()
     private val localMusicQueue = ArrayBlockingQueue<ShortArray>(8)
 
     private var consecutivePlc = 0
@@ -101,6 +101,7 @@ class IntercomService : Service() {
         instance = this
         prefs = RideComPrefs(this)
         musicSharer = MusicSharer(this)
+        systemAudioSharer = SystemAudioSharer(this)
         loadSavedSettings()
         createNotificationChannel()
     }
@@ -229,17 +230,24 @@ class IntercomService : Service() {
                 }
 
                 val nowMs = SystemClock.elapsedRealtime()
-                val peerSpeaking = (nowMs - lastRemoteAudioMs) < 450L
-                val anyVoice = shouldTxVoice || peerSpeaking
+                val duckThresholdDb = maxOf(s.voxThresholdDb + 14f, -38f)
+                val localSpeakingForDuck = !s.muted && (
+                    if (s.pttMode) s.pttPressed else voxGate.lastLevelDb >= duckThresholdDb
+                )
+                val remoteSpeakingForDuck = (nowMs - lastRemoteAudioMs) < 550L
+                val speechForDuck = localSpeakingForDuck || remoteSpeakingForDuck
 
-                val musicFrame = musicSharer.nextFrame(voiceActive = anyVoice)
+                val musicActiveNow = musicSharer.isPlaying || systemAudioSharer.isSharing
+                codec.setMusicMode(musicActiveNow)
+
+                val musicFrame = musicSharer.nextFrame(voiceActive = speechForDuck, nowMs = nowMs)
                 if (musicFrame != null) {
                     if (!localMusicQueue.offer(musicFrame)) {
                         localMusicQueue.poll()
                         localMusicQueue.offer(musicFrame)
                     }
                 }
-                val sysAudioFrame = systemAudioSharer.nextFrame(voiceActive = anyVoice)
+                val sysAudioFrame = systemAudioSharer.nextFrame(speechActive = speechForDuck, nowMs = nowMs)
 
                 var txPcm: ShortArray? = if (shouldTxVoice) pcm.copyOf() else null
                 if (musicFrame != null) {
@@ -303,7 +311,7 @@ class IntercomService : Service() {
                             perfDecCount++
                             if (n > 0) {
                                 hasRemoteAudio = true
-                                if ((result.flags and RideComProtocol.FLAG_VOICE_ACTIVE) != 0) {
+                                if ((result.flags and RideComProtocol.FLAG_VOICE_ACTIVE) != 0 && computeRmsDb(outPcm) >= -38f) {
                                     lastRemoteAudioMs = SystemClock.elapsedRealtime()
                                 }
                                 if (!wasPlayingRemote) {
@@ -367,6 +375,16 @@ class IntercomService : Service() {
                 peerConnected = false
             )
         }
+    }
+
+    private fun computeRmsDb(pcm: ShortArray): Float {
+        var sumSq = 0.0
+        for (s in pcm) {
+            val norm = s / 32768.0
+            sumSq += norm * norm
+        }
+        val rms = kotlin.math.sqrt(sumSq / pcm.size.coerceAtLeast(1))
+        return if (rms > 1e-6) (20.0 * kotlin.math.log10(rms)).toFloat() else -90f
     }
 
     private fun stopIntercom() {

@@ -49,6 +49,26 @@ Java_com_ridecom_codec_OpusCodec_nativeSetBitrate(
     }
 }
 
+JNIEXPORT void JNICALL
+Java_com_ridecom_codec_OpusCodec_nativeSetMusicMode(
+    JNIEnv*,
+    jobject,
+    jlong handle,
+    jboolean musicMode,
+    jint voiceBitrateBps
+) {
+    if (handle != 0L) {
+        auto* enc = reinterpret_cast<OpusEncoder*>(handle);
+        if (musicMode) {
+            opus_encoder_ctl(enc, OPUS_SET_SIGNAL(OPUS_AUTO));
+            opus_encoder_ctl(enc, OPUS_SET_BITRATE(40000));
+        } else {
+            opus_encoder_ctl(enc, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+            opus_encoder_ctl(enc, OPUS_SET_BITRATE(voiceBitrateBps));
+        }
+    }
+}
+
 JNIEXPORT jint JNICALL
 Java_com_ridecom_codec_OpusCodec_nativeEncode(
     JNIEnv* env,

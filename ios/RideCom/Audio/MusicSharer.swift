@@ -11,6 +11,7 @@ final class MusicSharer {
     private var converter: AVAudioConverter?
     private var accumulator: [Float] = []
     private var currentDuckGain: Float = 1.0
+    private var lastSpeechMs: Double = 0.0
     private var securityScopedUrl: URL?
 
     private(set) var isLoaded: Bool = false
@@ -123,8 +124,13 @@ final class MusicSharer {
 
         guard accumulator.count >= frameLen else { return nil }
 
-        let targetDuck: Float = voiceActive ? 0.25 : 1.0
-        let alpha: Float = targetDuck < currentDuckGain ? 0.35 : 0.06
+        let nowMs = ProcessInfo.processInfo.systemUptime * 1000.0
+        if voiceActive {
+            lastSpeechMs = nowMs
+        }
+        let shouldDuck = (nowMs - lastSpeechMs) <= 750.0
+        let targetDuck: Float = shouldDuck ? 0.15 : 1.0
+        let alpha: Float = targetDuck < currentDuckGain ? 0.45 : 0.05
         currentDuckGain += (targetDuck - currentDuckGain) * alpha
 
         let gain = min(max(volume, 0.0), 0.85) * currentDuckGain

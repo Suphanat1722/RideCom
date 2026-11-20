@@ -21,11 +21,24 @@ class OpusCodec(bitrateBps: Int = 24000) {
     )
 
     private val encodeScratch = ByteArray(1276)
+    private var baseBitrateBps: Int = bitrateBps
+    private var isMusicMode: Boolean = false
 
     fun setBitrate(bitrateBps: Int) {
         synchronized(encodeLock) {
+            baseBitrateBps = bitrateBps.coerceIn(12000, 48000)
+            if (encoderHandle != 0L && !isMusicMode) {
+                nativeSetBitrate(encoderHandle, baseBitrateBps)
+            }
+        }
+    }
+
+    fun setMusicMode(enabled: Boolean) {
+        synchronized(encodeLock) {
+            if (isMusicMode == enabled) return
+            isMusicMode = enabled
             if (encoderHandle != 0L) {
-                nativeSetBitrate(encoderHandle, bitrateBps.coerceIn(12000, 48000))
+                nativeSetMusicMode(encoderHandle, enabled, baseBitrateBps)
             }
         }
     }
@@ -103,6 +116,7 @@ class OpusCodec(bitrateBps: Int = 24000) {
     private external fun nativeCreateEncoder(sampleRate: Int, channels: Int, bitrateBps: Int): Long
     private external fun nativeDestroyEncoder(handle: Long)
     private external fun nativeSetBitrate(handle: Long, bitrateBps: Int)
+    private external fun nativeSetMusicMode(handle: Long, musicMode: Boolean, voiceBitrateBps: Int)
     private external fun nativeEncode(handle: Long, pcm: ShortArray, frameSamples: Int, outBuf: ByteArray): Int
 
     private external fun nativeCreateDecoder(sampleRate: Int, channels: Int): Long

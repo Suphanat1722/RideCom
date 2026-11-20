@@ -31,6 +31,7 @@ class MusicSharer(private val context: Context) {
 
     private var currentUri: Uri? = null
     private var currentDuckGain: Float = 1.0f
+    private var lastSpeechMs: Long = 0L
 
     fun loadAndPlay(uri: Uri) {
         stop()
@@ -64,13 +65,17 @@ class MusicSharer(private val context: Context) {
      * Pulls the next 20ms music frame scaled by user volume + smooth voice ducking.
      * Returns null when paused or not loaded.
      */
-    fun nextFrame(voiceActive: Boolean): ShortArray? {
+    fun nextFrame(voiceActive: Boolean, nowMs: Long = System.currentTimeMillis()): ShortArray? {
         if (!isPlaying) return null
         val raw = frameQueue.poll() ?: return null
 
-        val targetDuck = if (voiceActive) 0.25f else 1.0f
+        if (voiceActive) {
+            lastSpeechMs = nowMs
+        }
+        val shouldDuck = (nowMs - lastSpeechMs) <= 750L
+        val targetDuck = if (shouldDuck) 0.15f else 1.0f
         // Fast attack (duck down quickly when someone speaks), smooth release
-        val alpha = if (targetDuck < currentDuckGain) 0.35f else 0.06f
+        val alpha = if (targetDuck < currentDuckGain) 0.45f else 0.05f
         currentDuckGain += (targetDuck - currentDuckGain) * alpha
 
         val gain = volume.coerceIn(0f, 0.85f) * currentDuckGain

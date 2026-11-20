@@ -304,7 +304,9 @@ final class IntercomController: ObservableObject {
             shouldTxVoice = gateOpen
         }
 
-        let musicFrame = musicSharer.nextFrame(voiceActive: shouldTxVoice || peerSpeaking)
+        let duckThresholdDb = max(voxGate.thresholdDb + 14.0, -38.0)
+        let localSpeakingForDuck = !isMuted && (isPttMode ? isPttHeld : levelDb >= duckThresholdDb)
+        let musicFrame = musicSharer.nextFrame(voiceActive: localSpeakingForDuck || peerSpeaking)
         if let m = musicFrame {
             stateLock.lock()
             if localMusicQueue.count >= 6 { localMusicQueue.removeFirst() }
