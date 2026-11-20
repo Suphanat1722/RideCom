@@ -6,7 +6,8 @@ final class OpusCodec {
     let format: AVAudioFormat
     private let encoder: Opus.Encoder
     private let decoder: Opus.Decoder
-    private let lock = NSLock()
+    private let encodeLock = NSLock()
+    private let decodeLock = NSLock()
 
     init() throws {
         guard let fmt = AVAudioFormat(
@@ -21,8 +22,8 @@ final class OpusCodec {
     }
 
     func encode(_ buffer: AVAudioPCMBuffer) -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
+        encodeLock.lock()
+        defer { encodeLock.unlock() }
         var out = Data(count: 1276)
         do {
             let written = try encoder.encode(buffer, to: &out)
@@ -34,8 +35,8 @@ final class OpusCodec {
     }
 
     func decode(_ packet: Data) -> AVAudioPCMBuffer? {
-        lock.lock()
-        defer { lock.unlock() }
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
         do {
             return try decoder.decode(packet)
         } catch {

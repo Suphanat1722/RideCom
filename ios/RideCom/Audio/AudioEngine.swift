@@ -8,15 +8,20 @@ enum AudioRouteKind: String {
     case receiver = "Receiver"
 }
 
+/// Real-time full-duplex iOS AudioEngine using hardware-clock pull-driven AVAudioSourceNode
+/// (eliminates AVAudioPlayerNode + DispatchSourceTimer silent stalls with VoiceProcessingIO).
 final class AudioEngine {
     private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
     private let canonicalFormat: AVAudioFormat
 
+    private var sourceNode: AVAudioSourceNode?
     private var converter: AVAudioConverter?
-    private var accumulator: [Float] = []
-    private var playbackTimer: DispatchSourceTimer?
-    private let playbackQueue = DispatchQueue(label: "com.ridecom.audio.playback", qos: .userInteractive)
+    private var captureAccum: [Float] = []
+
+    // Render-thread ring buffer for exact 20ms frame pulling
+    private let renderLock = NSLock()
+    private var renderFrame: [Float] = Array(repeating: 0, count: RideComProtocol.frameSamples)
+    private var renderOffset: Int = RideComProtocol.frameSamples
 
     private var isRunning = false
     private(set) var preferBluetooth = true
@@ -44,12 +49,12 @@ final class AudioEngine {
         self.onCaptureFrame = onCaptureFrame
         self.onNeedPlaybackFrame = onNeedPlaybackFrame
         self.onRouteChanged = onRouteChanged
-        self.accumulator.removeAll(keepingCapacity: true)
+        self.captureAccum.removeAll(keepingCapacity: true)
+        self.renderOffset = RideComProtocol.frameSamples
 
         try configureSession(preferBluetooth: preferBluetooth)
         registerNotifications()
         try startEngineGraph()
-        startPlaybackTimer()
 
         isRunning = true
         updateRouteState()
@@ -69,26 +74,29 @@ final class AudioEngine {
         guard isRunning else { return }
         isRunning = false
 
-        playbackTimer?.cancel()
-        playbackTimer = nil
-
         NotificationCenter.default.removeObserver(self)
 
         engine.inputNode.removeTap(onBus: 0)
-        playerNode.stop()
         engine.stop()
+        if let src = sourceNode {
+            engine.detach(src)
+            sourceNode = nil
+        }
         engine.reset()
         converter = nil
-        accumulator.removeAll(keepingCapacity: false)
+        captureAccum.removeAll(keepingCapacity: false)
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func configureSession(preferBluetooth: Bool) throws {
         let session = AVAudioSession.sharedInstance()
-        var options: AVAudioSession.CategoryOptions = [.allowBluetooth, .mixWithOthers]
-        if !preferBluetooth {
-            options.insert(.defaultToSpeaker)
+        // Always include .defaultToSpeaker so when NO Bluetooth helmet is connected,
+        // audio plays clearly on loudspeaker instead of the quiet earpiece receiver.
+        // When Bluetooth HFP IS connected, iOS still routes automatically to Bluetooth.
+        var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
+        if preferBluetooth {
+            options.insert(.allowBluetooth)
         }
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: options)
         try? session.setPreferredSampleRate(RideComProtocol.sampleRate)
@@ -106,10 +114,28 @@ final class AudioEngine {
         let inputNode = engine.inputNode
         try? inputNode.setVoiceProcessingEnabled(true)
 
-        if !engine.attachedNodes.contains(playerNode) {
-            engine.attach(playerNode)
+        if let existing = sourceNode {
+            engine.detach(existing)
+            sourceNode = nil
         }
-        engine.connect(playerNode, to: engine.mainMixerNode, format: canonicalFormat)
+
+        let src = AVAudioSourceNode(format: canonicalFormat) { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
+            guard let self = self else { return noErr }
+            let abl = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let count = Int(frameCount)
+            guard let firstBuf = abl.first,
+                  let outPtr = firstBuf.mData?.assumingMemoryBound(to: Float.self) else {
+                return noErr
+            }
+            self.fillRenderBuffer(outPtr, count: count)
+            return noErr
+        }
+
+        sourceNode = src
+        engine.attach(src)
+        engine.connect(src, to: engine.mainMixerNode, format: canonicalFormat)
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
+        engine.mainMixerNode.outputVolume = 1.0
 
         let hwFormat = inputNode.outputFormat(forBus: 0)
         converter = AVAudioConverter(from: hwFormat, to: canonicalFormat)
@@ -122,7 +148,44 @@ final class AudioEngine {
 
         engine.prepare()
         try engine.start()
-        playerNode.play()
+    }
+
+    private func fillRenderBuffer(_ outPtr: UnsafeMutablePointer<Float>, count: Int) {
+        renderLock.lock()
+        defer { renderLock.unlock() }
+
+        var written = 0
+        while written < count {
+            if renderOffset >= RideComProtocol.frameSamples {
+                if let provider = onNeedPlaybackFrame {
+                    let pcmBuf = provider()
+                    let frameLen = min(Int(pcmBuf.frameLength), RideComProtocol.frameSamples)
+                    if let src = pcmBuf.floatChannelData?[0] {
+                        for i in 0..<frameLen {
+                            renderFrame[i] = src[i]
+                        }
+                        if frameLen < RideComProtocol.frameSamples {
+                            for i in frameLen..<RideComProtocol.frameSamples {
+                                renderFrame[i] = 0
+                            }
+                        }
+                    } else {
+                        for i in 0..<RideComProtocol.frameSamples { renderFrame[i] = 0 }
+                    }
+                } else {
+                    for i in 0..<RideComProtocol.frameSamples { renderFrame[i] = 0 }
+                }
+                renderOffset = 0
+            }
+
+            let avail = RideComProtocol.frameSamples - renderOffset
+            let toCopy = min(avail, count - written)
+            for i in 0..<toCopy {
+                outPtr[written + i] = renderFrame[renderOffset + i]
+            }
+            renderOffset += toCopy
+            written += toCopy
+        }
     }
 
     private func handleCapturedBuffer(_ inputBuffer: AVAudioPCMBuffer) {
@@ -150,35 +213,23 @@ final class AudioEngine {
         let count = Int(outBuffer.frameLength)
         guard count > 0 else { return }
 
-        accumulator.append(contentsOf: UnsafeBufferPointer(start: channelData, count: count))
+        captureAccum.append(contentsOf: UnsafeBufferPointer(start: channelData, count: count))
 
         let frameLen = RideComProtocol.frameSamples
-        while accumulator.count >= frameLen {
+        while captureAccum.count >= frameLen {
             guard let frameBuf = AVAudioPCMBuffer(
                 pcmFormat: canonicalFormat,
                 frameCapacity: AVAudioFrameCount(frameLen)
             ) else { break }
             frameBuf.frameLength = AVAudioFrameCount(frameLen)
             if let dst = frameBuf.floatChannelData?[0] {
-                accumulator.withUnsafeBufferPointer { src in
+                captureAccum.withUnsafeBufferPointer { src in
                     dst.update(from: src.baseAddress!, count: frameLen)
                 }
             }
-            accumulator.removeFirst(frameLen)
+            captureAccum.removeFirst(frameLen)
             onCaptureFrame?(frameBuf)
         }
-    }
-
-    private func startPlaybackTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: playbackQueue)
-        timer.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(RideComProtocol.frameMs), leeway: .milliseconds(2))
-        timer.setEventHandler { [weak self] in
-            guard let self = self, self.isRunning, let provider = self.onNeedPlaybackFrame else { return }
-            let buf = provider()
-            self.playerNode.scheduleBuffer(buf, completionHandler: nil)
-        }
-        playbackTimer = timer
-        timer.resume()
     }
 
     private func registerNotifications() {
@@ -202,21 +253,32 @@ final class AudioEngine {
               let typeVal = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeVal) else { return }
 
-        if type == .ended {
+        if type == .ended && isRunning {
             try? configureSession(preferBluetooth: preferBluetooth)
             if !engine.isRunning {
-                try? engine.start()
-                playerNode.play()
+                try? startEngineGraph()
             }
             updateRouteState()
         }
     }
 
     @objc private func handleRouteChange(_ notification: Notification) {
+        guard isRunning else { return }
         updateRouteState()
-        if isRunning && !engine.isRunning {
-            try? engine.start()
-            playerNode.play()
+
+        guard let info = notification.userInfo,
+              let reasonVal = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonVal),
+              reason == .newDeviceAvailable || reason == .oldDeviceUnavailable else {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.isRunning else { return }
+            self.engine.inputNode.removeTap(onBus: 0)
+            self.engine.stop()
+            try? self.startEngineGraph()
+            self.updateRouteState()
         }
     }
 
