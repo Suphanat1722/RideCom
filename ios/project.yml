@@ -1,0 +1,48 @@
+name: RideCom
+options:
+  bundleIdPrefix: com.ridecom
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "16.0"
+
+packages:
+  SwiftOpus:
+    url: https://github.com/alta/swift-opus.git
+    from: "0.0.2"
+
+targets:
+  RideCom:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: RideCom
+    dependencies:
+      - package: SwiftOpus
+        product: Opus
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ridecom.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    info:
+      path: RideCom/Info.plist
+      properties:
+        CFBundleDisplayName: RideCom
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription: "RideCom uses your microphone and helmet Bluetooth headset for offline intercom."
+        NSLocalNetworkUsageDescription: "RideCom uses local Wi-Fi to discover and talk to your riding partner offline."
+        NSBonjourServices:
+          - _ridecom._udp

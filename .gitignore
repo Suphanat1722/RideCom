@@ -1,0 +1,29 @@
+# Gradle / Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/*.iml
+*.apk
+*.aab
+
+# Xcode / iOS
+ios/*.xcodeproj/
+ios/*.xcworkspace/
+ios/build/
+ios/DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Python
+.venv/
+venv/
+__pycache__/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/

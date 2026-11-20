@@ -1,0 +1,83 @@
+name: Build RideCom (Android APK & iOS Unsigned IPA)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideCom-Android-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  build-ios:
+    name: Build iOS Unsigned IPA (SideStore)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build Unsigned .app for iOS Device
+        run: |
+          xcodebuild \
+            -project RideCom.xcodeproj \
+            -scheme RideCom \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package Unsigned .ipa for SideStore
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -r build/Build/Products/Release-iphoneos/RideCom.app build/ipa/Payload/
+          cd build/ipa
+          zip -r ../RideCom-unsigned.ipa Payload
+
+      - name: Upload iOS Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideCom-iOS-Unsigned-IPA
+          path: ios/build/RideCom-unsigned.ipa
+          if-no-files-found: error
